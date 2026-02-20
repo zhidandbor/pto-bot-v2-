@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: pto_bot
+      POSTGRES_USER: pto_bot
+      POSTGRES_PASSWORD: pto_bot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pto_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pto_bot -d pto_bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  bot:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    restart: unless-stopped
+
+volumes:
+  pto_pg_data:
