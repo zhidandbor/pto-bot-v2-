@@ -37,3 +37,7 @@ class Settings(BaseSettings):
 
     context_ttl_seconds: int = Field(default=3600, alias="CONTEXT_TTL_SECONDS")
     pending_action_ttl_seconds: int = Field(default=600, alias="PENDING_ACTION_TTL_SECONDS")
+
+    # Comma-separated list of module names to load at startup.
+    # Example: ENABLED_MODULES=requests,knowledge,letters
+    enabled_modules: str = Field(default="", alias="ENABLED_MODULES")

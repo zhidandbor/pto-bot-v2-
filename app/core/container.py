@@ -64,7 +64,12 @@ class Container:
     excel_reader: ExcelReader
 
     async def startup(self) -> None:
-        await self.settings_service.ensure_defaults()
+        # Create a dedicated async session for startup initialization.
+        # initialize_defaults() is transactional: sets recipient_email and
+        # cooldown_minutes only if not already present in the DB.
+        async with self.session_factory() as session:
+            async with session.begin():
+                await self.settings_service.initialize_defaults(session)
         logger.info("startup_done")
 
     async def shutdown(self) -> None:
@@ -103,7 +108,8 @@ def build_container(settings: Settings) -> Container:
     for spec in core_commands:
         registry._commands[spec.command] = spec  # internal registration of core commands
 
-    enabled = []  # modules are loaded only when present/configured
+    # Load enabled modules from env (comma-separated). Empty string → no modules.
+    enabled = [m.strip() for m in settings.enabled_modules.split(",") if m.strip()]
     module_loader = ModuleLoader(enabled_modules=enabled)
 
     users_repo = UsersRepository()
