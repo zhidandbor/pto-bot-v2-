@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +14,11 @@ from app.db.repositories.user_contexts import UserContextsRepository
 from app.services.rbac import RBACService
 
 logger = get_logger(__name__)
+
+
+def _display_name(obj: object) -> str:
+    """Return a human-readable label for an Object row."""
+    return getattr(obj, "title_name", None) or getattr(obj, "ps_name", None) or f"#{getattr(obj, 'id', '?')}"
 
 
 @dataclass(frozen=True)
@@ -51,7 +57,8 @@ class ContextResolver:
         chat_id: int,
         user_id: int,
     ) -> ResolvedContext:
-        objects = await self.groups_repo.get_objects_for_chat(session, chat_id)
+        # Objects linked to this group chat via ObjectGroupLink
+        objects = await self.objects_repo.list_linked_objects(session, chat_id)
         if not objects:
             return ResolvedContext(
                 chat_id=chat_id, user_id=user_id,
@@ -61,18 +68,19 @@ class ContextResolver:
             obj = objects[0]
             return ResolvedContext(
                 chat_id=chat_id, user_id=user_id,
-                is_group=True, object_id=obj.id, title=obj.title,
+                is_group=True, object_id=obj.id, title=_display_name(obj),
             )
-        # Multiple objects — check cached user selection
-        cached = await self.user_contexts_repo.get(
-            session, user_id=user_id, chat_id=chat_id
+        # Multiple objects — check cached user selection (TTL-aware)
+        now = datetime.now(timezone.utc)
+        cached_id = await self.user_contexts_repo.get_selected_object_id(
+            session, telegram_user_id=user_id, chat_id=chat_id, now=now
         )
-        if cached is not None:
-            matched = next((o for o in objects if o.id == cached.object_id), None)
+        if cached_id is not None:
+            matched = next((o for o in objects if o.id == cached_id), None)
             if matched:
                 return ResolvedContext(
                     chat_id=chat_id, user_id=user_id,
-                    is_group=True, object_id=matched.id, title=matched.title,
+                    is_group=True, object_id=matched.id, title=_display_name(matched),
                 )
         logger.debug("context_requires_selection", chat_id=chat_id, user_id=user_id)
         return ResolvedContext(
@@ -92,17 +100,18 @@ class ContextResolver:
                 chat_id=chat_id, user_id=user_id,
                 is_group=False, object_id=None, title=None,
             )
-        cached = await self.user_contexts_repo.get(
-            session, user_id=user_id, chat_id=chat_id
+        now = datetime.now(timezone.utc)
+        cached_id = await self.user_contexts_repo.get_selected_object_id(
+            session, telegram_user_id=user_id, chat_id=chat_id, now=now
         )
-        if cached is not None:
-            obj = await self.objects_repo.get_by_id(session, cached.object_id)
+        if cached_id is not None:
+            obj = await self.objects_repo.get_by_id(session, cached_id)
             if obj:
                 return ResolvedContext(
                     chat_id=chat_id, user_id=user_id,
-                    is_group=False, object_id=obj.id, title=obj.title,
+                    is_group=False, object_id=obj.id, title=_display_name(obj),
                 )
-        objects = await self.objects_repo.get_all(session)
+        objects = await self.objects_repo.list(session)
         if not objects:
             return ResolvedContext(
                 chat_id=chat_id, user_id=user_id,
@@ -112,7 +121,7 @@ class ContextResolver:
             obj = objects[0]
             return ResolvedContext(
                 chat_id=chat_id, user_id=user_id,
-                is_group=False, object_id=obj.id, title=obj.title,
+                is_group=False, object_id=obj.id, title=_display_name(obj),
             )
         return ResolvedContext(
             chat_id=chat_id, user_id=user_id,
@@ -126,6 +135,14 @@ class ContextResolver:
         chat_id: int,
         object_id: int,
     ) -> None:
-        await self.user_contexts_repo.set(
-            session, user_id=user_id, chat_id=chat_id, object_id=object_id
+        now = datetime.now(timezone.utc)
+        ttl = self.settings.context_ttl_seconds
+        expires_at = now + timedelta(seconds=ttl) if ttl > 0 else None
+        await self.user_contexts_repo.set_selected_object(
+            session,
+            telegram_user_id=user_id,
+            chat_id=chat_id,
+            object_id=object_id,
+            selected_at=now,
+            expires_at=expires_at,
         )

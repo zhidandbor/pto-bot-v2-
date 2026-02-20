@@ -38,11 +38,17 @@ class RateLimitMiddleware(BaseMiddleware):
 
         session = data["session"]
         user_id: int = message.from_user.id
+        is_group: bool = message.chat.type in ("group", "supergroup")
+
+        # Group: one shared cooldown per chat (all members share the quota).
+        # Private: individual cooldown per user.
+        scope_type = "chat" if is_group else "user"
+        scope_id = message.chat.id if is_group else user_id
 
         is_allowed, wait_seconds = await self.rate_limiter.check_and_touch(
             session,
-            scope_type="user",
-            scope_id=user_id,
+            scope_type=scope_type,
+            scope_id=scope_id,
         )
         if not is_allowed:
             minutes = max(1, (wait_seconds + 59) // 60)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message, TelegramObject, Update
+from aiogram.types import CallbackQuery, Message, TelegramObject, Update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.module_registry import ModuleRegistry
@@ -40,20 +40,35 @@ class RBACMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        message: Message | None = None
-        if isinstance(event, Update):
-            message = event.message
-
-        if message is None or message.from_user is None:
-            # callback_query and other non-message updates pass through;
-            # per-handler auth is the responsibility of the handler itself.
+        if not isinstance(event, Update):
             data.setdefault("user_role", "user")
             return await handler(event, data)
 
         session: AsyncSession = data["session"]
+
+        # --- callback_query path ---
+        # callback_query MUST also go through RBAC; previously it defaulted to "user".
+        if event.callback_query is not None:
+            cq: CallbackQuery = event.callback_query
+            if cq.from_user is not None:
+                chat_type = "private"
+                if cq.message is not None:
+                    chat_type = cq.message.chat.type
+                is_group_cq = chat_type in ("group", "supergroup")
+                role = await _resolve_role(self.rbac, session, cq.from_user.id, is_group_cq)
+                data["user_role"] = role
+            else:
+                data["user_role"] = "blocked"
+            return await handler(event, data)
+
+        # --- message path ---
+        message: Message | None = event.message
+        if message is None or message.from_user is None:
+            data.setdefault("user_role", "user")
+            return await handler(event, data)
+
         user_id: int = message.from_user.id
         is_group: bool = message.chat.type in ("group", "supergroup")
-
         role = await _resolve_role(self.rbac, session, user_id, is_group)
         data["user_role"] = role
 
