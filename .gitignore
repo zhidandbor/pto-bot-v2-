@@ -209,6 +209,7 @@ __marimo__/
 # Секреты
 .env
 .env.*
+!.env.example
 
 # Виртуальные окружения
 venv/
