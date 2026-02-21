@@ -152,3 +152,78 @@ class UserContext(Base):
     pending_command: Mapped[str | None] = mapped_column(String(256), nullable=True)
     pending_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
     pending_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+from decimal import Decimal
+from sqlalchemy import Numeric
+
+class MaterialRequest(Base):
+    __tablename__ = "materials_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[str] = mapped_column(String(12), unique=True, nullable=False, index=True)
+
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    object_id: Mapped[int | None] = mapped_column(
+        ForeignKey("objects.id", ondelete="SET NULL"), nullable=True
+    )
+
+    ps_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_date: Mapped[date] = mapped_column(Date, nullable=False)
+    counter: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    request_number: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    recipient_email: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    user_full_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="draft"
+    )  # draft | sent | cancelled | failed
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    items: Mapped[list["MaterialItem"]] = relationship(
+        "MaterialItem", back_populates="request", cascade="all, delete-orphan"
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class MaterialItem(Base):
+    __tablename__ = "materials_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[int] = mapped_column(
+        ForeignKey("materials_requests.id", ondelete="CASCADE"), nullable=False
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    type_mark: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    qty: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    unit: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    request: Mapped["MaterialRequest"] = relationship(
+        "MaterialRequest", back_populates="items"
+    )
+
+
+class MaterialGroupDailyCounter(Base):
+    __tablename__ = "materials_group_daily_counters"
+    __table_args__ = (
+        UniqueConstraint(
+            "counter_date", "chat_id", name="uq_mat_group_daily_counter"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    counter_date: Mapped[date] = mapped_column(Date, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_counter: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
