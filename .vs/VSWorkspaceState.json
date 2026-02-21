@@ -3,10 +3,9 @@
     "",
     "\\app",
     "\\app\\db",
-    "\\app\\db\\repositories",
     "\\app\\modules",
     "\\app\\modules\\materials"
   ],
-  "SelectedNode": "\\app\\db\\repositories\\admins.py",
+  "SelectedNode": "\\app\\modules\\materials",
   "PreviewInSolutionExplorer": false
 }
