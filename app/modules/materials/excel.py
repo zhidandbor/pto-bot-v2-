@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,8 @@ _MONTHS_RU = (
     "января", "февраля", "марта", "апреля", "мая", "июня",
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 )
+
+_EXCEL_DANGEROUS_PREFIXES = ("=", "+", "-", "@")
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +120,27 @@ def build_file_name(draft: MaterialDraft) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Security helpers
+# ---------------------------------------------------------------------------
+
+def sanitize_excel_text(value: str) -> str:
+    """
+    Предотвращает Excel formula injection.
+    Если строка начинается с опасного символа (=, +, -, @),
+    префиксируем апострофом '  и логируем событие.
+    """
+    stripped = value.lstrip()
+    if stripped and stripped[0] in _EXCEL_DANGEROUS_PREFIXES:
+        logger.warning(
+            "excel_formula_injection_sanitized",
+            prefix=stripped[0],
+            value=value[:80],
+        )
+        return "'" + value
+    return value
+
+
+# ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
 
@@ -132,12 +156,15 @@ def _set(ws: Any, cell_ref: str, value: Any) -> None:
     Записать значение по текстовой ссылке (напр. "C1").
     Молча пропускает MergedCell-дочерние ячейки — запись только
     в главную (верхнюю-левую) ячейку объединения.
+    Строковые значения проходят sanitize_excel_text().
     """
+    if isinstance(value, str):
+        value = sanitize_excel_text(value)
+
     cell = ws[cell_ref]
     if not isinstance(cell, MergedCell):
         cell.value = value
     else:
-        # Найти главную ячейку слияния и записать туда
         master = _find_merge_master(ws, cell_ref)
         if master:
             master.value = value
@@ -147,6 +174,9 @@ def _set(ws: Any, cell_ref: str, value: Any) -> None:
 
 def _set_col(ws: Any, row: int, col: int, value: Any) -> None:
     """Записать значение по (row, col). Пропускает MergedCell-рабов."""
+    if isinstance(value, str):
+        value = sanitize_excel_text(value)
+
     cell = ws.cell(row=row, column=col)
     if not isinstance(cell, MergedCell):
         cell.value = value
@@ -180,11 +210,11 @@ def _ru_date(d: date) -> str:
     return f"{d.day} {_MONTHS_RU[d.month - 1]} {d.year} г."
 
 
-def _format_qty(qty: float) -> int | float:
+def _format_qty(qty: Decimal) -> int | float:
     """
-    Целое → int (без .0 в ячейке).
-    Дробное → float (openpyxl форматирует сам).
+    Decimal → int (целые без .0) или float (дроби, квантованные до 0.001).
+    Decimal хранится точно до этой точки; Excel хранит как double.
     """
-    if qty == int(qty):
+    if qty == qty.to_integral_value():
         return int(qty)
-    return qty
+    return float(qty.quantize(Decimal("0.001")))

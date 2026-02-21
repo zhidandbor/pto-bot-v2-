@@ -8,12 +8,12 @@ def confirm_cancel_kb(draft_id: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="✅ Отправить",
-                    callback_data=f"mat_confirm:{draft_id}",
+                    text="\u2705 Отправить",
+                    callback_data=f"matconfirm{draft_id}",
                 ),
                 InlineKeyboardButton(
-                    text="❌ Отменить",
-                    callback_data=f"mat_cancel:{draft_id}",
+                    text="\u274c Отменить",
+                    callback_data=f"matcancel{draft_id}",
                 ),
             ]
         ]
