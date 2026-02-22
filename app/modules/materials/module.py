@@ -29,17 +29,15 @@ class MaterialsModule:
         return [
             "📦 <b>Заявки на материалы</b>\n"
             "Команда: /materials\n"
-            "Формат строки: Имя, Тип, Количество Единицы\n"
-            "Пример: уголок г/к, 50х50х5 L=6 м, 0,156 т\n"
+            "Формат строки: [Имя] ([Тип]) - [Количество] [Единицы]\n"
+            "Пример: уголок г/к (50х50х5, L=6 м) - 0,156 т\n"
             "Единицы: м, п.м, м², м³, кг, т, шт., компл., уп., рул., л\n"
             "В личном чате первая строка — объект (напр. ПС 55)."
         ]
 
 
 def create_module(container: object) -> BotModule:  # type: ignore[type-arg]
-    email_dispatcher = MaterialsEmailDispatcher(
-        settings=container.settings  # type: ignore[attr-defined]
-    )
+    email_dispatcher = MaterialsEmailDispatcher(settings=container.settings)  # type: ignore[attr-defined]
     service = MaterialsService(
         session_factory=container.session_factory,  # type: ignore[attr-defined]
         materials_repo=MaterialsRepository(),
@@ -58,7 +56,4 @@ def create_module(container: object) -> BotModule:  # type: ignore[type-arg]
             rate_limited=True,
         )
     ]
-    # FIX: регистрация — задача ModuleLoader.
-    # container.registry.register_module() вызывается ядром автоматически
-    # после возврата модуля из factory. Двойная регистрация устранена.
     return MaterialsModule(router=router, cmds=cmds)
