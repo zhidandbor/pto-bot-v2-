@@ -4,4 +4,5 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class MaterialsFSM(StatesGroup):
-    waiting_confirmation = State()
+    waiting_list = State()          # ожидание текста заявки после /materials
+    waiting_confirmation = State()  # зарезервировано

@@ -4,16 +4,17 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
 def confirm_cancel_kb(draft_id: str) -> InlineKeyboardMarkup:
+    """Inline-клавиатура предпросмотра: mat:confirm:{id} / mat:cancel:{id} (TZ §13.3)."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="\u2705 Отправить",
-                    callback_data=f"matconfirm{draft_id}",
+                    text="✅ Подтвердить",
+                    callback_data=f"mat:confirm:{draft_id}",
                 ),
                 InlineKeyboardButton(
-                    text="\u274c Отменить",
-                    callback_data=f"matcancel{draft_id}",
+                    text="❌ Отменить",
+                    callback_data=f"mat:cancel:{draft_id}",
                 ),
             ]
         ]

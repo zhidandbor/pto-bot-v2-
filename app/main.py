@@ -42,6 +42,9 @@ async def run_polling() -> None:
     dp.include_router(user_router.router(container))
 
     container.module_loader.load_modules(container)
+    # FIX: подключить роутеры загруженных модулей в dispatcher
+    for mod_router in container.registry.module_routers():
+        dp.include_router(mod_router)
 
     await container.startup()
 
@@ -79,6 +82,9 @@ async def run_webhook() -> None:
     dp.include_router(user_router.router(container))
 
     container.module_loader.load_modules(container)
+    # FIX: подключить роутеры загруженных модулей в dispatcher
+    for mod_router in container.registry.module_routers():
+        dp.include_router(mod_router)
 
     await container.startup()
 
