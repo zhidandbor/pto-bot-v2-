@@ -20,18 +20,17 @@ from app.services.settings_service import SettingsService
 
 logger = get_logger(__name__)
 
-# Отдельный scope чтобы не конфликтовать с общим ядровым rate_limit
 _MAT_SCOPE = "mat_chat"
 
 
 def _new_draft_id() -> str:
-    return secrets.token_hex(6)  # 12 hex-символов
+    return secrets.token_hex(6)
 
 
 class PreviewResult(NamedTuple):
     draft_id: str
     preview_text: str
-    hard_error: str  # непустая → показать ошибку вместо preview
+    hard_error: str
 
 
 class ConfirmResult(NamedTuple):
@@ -40,14 +39,12 @@ class ConfirmResult(NamedTuple):
 
 
 def _build_obj_data(obj: object) -> dict:  # type: ignore[type-arg]
-    """Маппинг полей Object → dict для fill_excel_template."""
     work_period = ""
     if getattr(obj, "work_start", None):
         start = obj.work_start.strftime("%d.%m.%Y")  # type: ignore[union-attr]
         end = obj.work_end.strftime("%d.%m.%Y") if getattr(obj, "work_end", None) else ""  # type: ignore[union-attr]
         work_period = f"{start} — {end}" if end else start
-
-    extra: dict = getattr(obj, "extra", {}) or {}
+    extra: dict = getattr(obj, "extra", {}) or {}  # type: ignore[type-arg]
     return {
         "ps_name": getattr(obj, "ps_name", "") or "",
         "contractor": extra.get("contractor", ""),
@@ -69,7 +66,7 @@ class MaterialsService:
     email_dispatcher: MaterialsEmailDispatcher
 
     # ------------------------------------------------------------------
-    # Cooldown: read-only, без обновления (обновление — только в confirm)
+    # Cooldown: read-only, не обновляет last_request_at
     # ------------------------------------------------------------------
 
     async def check_cooldown(self, *, scope_id: int) -> tuple[bool, int]:
@@ -84,15 +81,19 @@ class MaterialsService:
             if not row:
                 return True, 0
             now = datetime.now(timezone.utc)
-            next_allowed = row.last_request_at.replace(tzinfo=timezone.utc) + timedelta(
-                minutes=cooldown_minutes
-            )
+            # FIX TZ: astimezone для tz-aware, replace только для naive
+            last_at = row.last_request_at
+            if last_at.tzinfo is None:
+                last_at = last_at.replace(tzinfo=timezone.utc)
+            else:
+                last_at = last_at.astimezone(timezone.utc)
+            next_allowed = last_at + timedelta(minutes=cooldown_minutes)
             if now < next_allowed:
                 return False, int((next_allowed - now).total_seconds())
             return True, 0
 
     # ------------------------------------------------------------------
-    # Шаг 1: Парсинг → объект → счётчик → черновик → текст предпросмотра
+    # Шаг 1: Парсинг → черновик (counter=0, номер присваивается при confirm)
     # ------------------------------------------------------------------
 
     async def build_preview(
@@ -109,7 +110,6 @@ class MaterialsService:
                 obj = None
                 lines_text = text
 
-                # --- Определение объекта ---
                 if is_private:
                     raw = [ln.strip() for ln in text.splitlines() if ln.strip()]
                     if not raw:
@@ -128,7 +128,6 @@ class MaterialsService:
                     if linked:
                         obj = linked[0]
 
-                # --- Парсинг ---
                 parse_result = parse_materials_message(lines_text)
                 if not parse_result.lines:
                     err_detail = "\n".join(
@@ -142,25 +141,18 @@ class MaterialsService:
                         + (f"\n\nОшибки:\n{err_detail}" if err_detail else ""),
                     )
 
-                # --- Настройки ---
                 recipient_email = await self.settings_service.get_recipient_email(session)
 
-                # --- Атомарный счётчик (FR-MAT-09.3: в каждой группе свой) ---
                 today = date.today()
-                counter_scope = chat_id if not is_private else telegram_user_id
-                counter = await self.materials_repo.increment_daily_counter(
-                    session, chat_id=counter_scope, counter_date=today
-                )
-
                 ps_number = (
                     getattr(obj, "ps_number", None)
                     or getattr(obj, "ps_name", None)
                     or "???"
                 ) if obj else "???"
-                request_number = f"{today.strftime('%y%m%d')}-{ps_number}-{counter}"
                 draft_id = _new_draft_id()
 
-                # --- Сохранение черновика ---
+                # FIX COUNTER: counter=0, request_number=None
+                # Номер назначается атомарно в confirm() после успешного перехода статуса
                 await self.materials_repo.create_request(
                     session,
                     draft_id=draft_id,
@@ -169,8 +161,8 @@ class MaterialsService:
                     object_id=getattr(obj, "id", None) if obj else None,
                     ps_number=ps_number,
                     request_date=today,
-                    counter=counter,
-                    request_number=request_number,
+                    counter=0,
+                    request_number=None,
                     recipient_email=recipient_email,
                     user_full_name=user_full_name,
                     lines=[ln.to_dict() for ln in parse_result.lines],
@@ -184,10 +176,10 @@ class MaterialsService:
 
                 lines_display = "\n".join(ln.display() for ln in parse_result.lines)
                 preview = (
-                    f"📦 Заявка на материалы — ПРЕДПРОСМОТР\n\n"
+                    "📦 Заявка на материалы — ПРЕДПРОСМОТР\n\n"
                     f"Объект: {object_name}\n"
                     f"ПС: {ps_number}\n"
-                    f"Дата: {today.strftime('%d.%m.%Y')} ({counter})\n\n"
+                    f"Дата: {today.strftime('%d.%m.%Y')}\n\n"
                     f"Позиции:\n{lines_display}\n\n"
                     "Проверьте список. Если всё верно — нажмите «✅ Подтвердить»."
                 )
@@ -213,7 +205,7 @@ class MaterialsService:
         return PreviewResult(draft_id=draft_id, preview_text=preview, hard_error="")
 
     # ------------------------------------------------------------------
-    # Шаг 2: confirm → Excel (asyncio.to_thread) → email → статус → cooldown
+    # Шаг 2: confirm → claim → counter → Excel (thread) → email → статус → cooldown
     # ------------------------------------------------------------------
 
     async def confirm(
@@ -222,56 +214,71 @@ class MaterialsService:
         draft_id: str,
         telegram_user_id: int,
     ) -> ConfirmResult:
-        # --- Читаем черновик (отдельная сессия, read-only) ---
+        # --- FIX RACE: атомарный переход draft → sending, защита от дубликатов ---
         async with self.session_factory() as session:
-            req = await self.materials_repo.get_by_draft_id(session, draft_id)
-            if req is None:
-                return ConfirmResult(False, "Черновик не найден.")
+            async with session.begin():
+                claimed = await self.materials_repo.claim_for_sending(
+                    session, draft_id=draft_id, telegram_user_id=telegram_user_id
+                )
+                if not claimed:
+                    req = await self.materials_repo.get_by_draft_id(session, draft_id)
+                    if req is None:
+                        return ConfirmResult(False, "Черновик не найден.")
+                    if req.telegram_user_id != telegram_user_id:
+                        return ConfirmResult(False, "Нет доступа к этой заявке.")
+                    return ConfirmResult(False, "Уже обработано.")
 
-            # Идемпотентность: повторное нажатие не создаёт повторных отправок
-            if req.status in ("sent", "cancelled"):
-                return ConfirmResult(False, "Уже обработано.")
+                req = await self.materials_repo.get_by_draft_id(session, draft_id)
 
-            if req.telegram_user_id != telegram_user_id:
-                return ConfirmResult(False, "Нет доступа к этой заявке.")
+                # FIX COUNTER: инкремент при confirm, а не при preview
+                scope_id = req.chat_id or telegram_user_id  # type: ignore[union-attr]
+                counter = await self.materials_repo.increment_daily_counter(
+                    session, chat_id=scope_id, counter_date=req.request_date  # type: ignore[union-attr]
+                )
+                request_number = (
+                    f"{req.request_date.strftime('%y%m%d')}-{req.ps_number or '???'}-{counter}"  # type: ignore[union-attr]
+                )
+                await self.materials_repo.assign_number(
+                    session,
+                    draft_id=draft_id,
+                    counter=counter,
+                    request_number=request_number,
+                )
 
-            recipient_email = (
-                req.recipient_email
-                or await self.settings_service.get_recipient_email(session)
-            )
-            cooldown_minutes = await self.settings_service.get_cooldown_minutes(session)
+                recipient_email = (
+                    req.recipient_email  # type: ignore[union-attr]
+                    or await self.settings_service.get_recipient_email(session)
+                )
+                cooldown_minutes = await self.settings_service.get_cooldown_minutes(session)
 
-            # Данные объекта для шапки Excel (пока сессия открыта)
-            obj_data: dict = {}  # type: ignore[type-arg]
-            if req.object_id:
-                obj = await self.objects_repo.get_by_id(session, req.object_id)
-                if obj:
-                    obj_data = _build_obj_data(obj)
+                obj_data: dict = {}  # type: ignore[type-arg]
+                if req.object_id:  # type: ignore[union-attr]
+                    obj = await self.objects_repo.get_by_id(session, req.object_id)  # type: ignore[union-attr]
+                    if obj:
+                        obj_data = _build_obj_data(obj)
 
-            # Собираем MaterialDraft пока items доступны через relationship
-            draft = MaterialDraft(
-                draft_id=draft_id,
-                chat_id=req.chat_id or telegram_user_id,
-                telegram_user_id=telegram_user_id,
-                object_id=req.object_id,
-                ps_number=req.ps_number,
-                request_date=req.request_date,
-                counter=req.counter,
-                request_number=req.request_number or "",
-                recipient_email=recipient_email,
-                user_full_name=req.user_full_name or "",
-                lines=[
-                    MaterialLine(
-                        line_no=item.line_no,
-                        name=item.name,
-                        type_mark=item.type_mark or "",
-                        qty=item.qty,
-                        unit=item.unit,
-                    )
-                    for item in sorted(req.items, key=lambda i: i.line_no)
-                ],
-            )
-            scope_id = req.chat_id or telegram_user_id
+                draft = MaterialDraft(
+                    draft_id=draft_id,
+                    chat_id=req.chat_id or telegram_user_id,  # type: ignore[union-attr]
+                    telegram_user_id=telegram_user_id,
+                    object_id=req.object_id,  # type: ignore[union-attr]
+                    ps_number=req.ps_number,  # type: ignore[union-attr]
+                    request_date=req.request_date,  # type: ignore[union-attr]
+                    counter=counter,
+                    request_number=request_number,
+                    recipient_email=recipient_email,
+                    user_full_name=req.user_full_name or "",  # type: ignore[union-attr]
+                    lines=[
+                        MaterialLine(
+                            line_no=item.line_no,
+                            name=item.name,
+                            type_mark=item.type_mark or "",
+                            qty=item.qty,
+                            unit=item.unit,
+                        )
+                        for item in sorted(req.items, key=lambda i: i.line_no)  # type: ignore[union-attr]
+                    ],
+                )
 
         # --- Excel в отдельном потоке (NFR: не блокировать event loop) ---
         try:
@@ -294,7 +301,6 @@ class MaterialsService:
                 "❌ Не удалось сформировать файл заявки.\n\nОбратитесь к инженеру ПТО.",
             )
 
-        # --- Имя файла и тема письма (FR-MAT-16, FR-MAT-17) ---
         ps = draft.ps_number or "объект"
         today_str = draft.request_date.strftime("%d.%m.%Y")
         filename = build_file_name(draft)
@@ -307,7 +313,6 @@ class MaterialsService:
             f"Заявку сформировал: {draft.user_full_name or '—'}\n"
         )
 
-        # --- Отправка email ---
         try:
             await self.email_dispatcher.send_with_attachment(
                 to_email=recipient_email,
@@ -366,12 +371,12 @@ class MaterialsService:
             f"ПС: {ps}\n"
             f"Дата: {today_str} ({draft.counter})\n"
             f"E-mail получателя: {recipient_email}\n\n"
-            f"⏱ Следующую заявку на материалы можно отправить через {cooldown_minutes} мин.\n"
+            f"⏱ Следующую заявку можно отправить через {cooldown_minutes} мин.\n"
             f"Не ранее: {next_time.astimezone().strftime('%d.%m.%Y %H:%M')}",
         )
 
     # ------------------------------------------------------------------
-    # Отмена: НЕ запускает cooldown (FR-MAT-10)
+    # Отмена: cooldown не запускается (FR-MAT-10)
     # ------------------------------------------------------------------
 
     async def cancel(self, *, draft_id: str, telegram_user_id: int) -> str:
@@ -380,7 +385,7 @@ class MaterialsService:
                 req = await self.materials_repo.get_by_draft_id(session, draft_id)
                 if req is None:
                     return "Черновик не найден."
-                if req.status in ("sent", "cancelled"):
+                if req.status in ("sent", "cancelled", "sending"):
                     return "Уже обработано."
                 if req.telegram_user_id != telegram_user_id:
                     return "Нет доступа к этой заявке."

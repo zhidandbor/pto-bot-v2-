@@ -93,6 +93,54 @@ class MaterialsRepository:
             )
         )
 
+    async def claim_for_sending(
+        self,
+        session: AsyncSession,
+        *,
+        draft_id: str,
+        telegram_user_id: int,
+    ) -> bool:
+        """
+        Атомарный переход статуса draft → sending.
+
+        Возвращает True, если доступ получен (1 строка обновлена).
+        False — заявка уже обрабатывается / отменена / чужая / не найдена.
+        Используется внутри активной session.begin() транзакции.
+        """
+        result = await session.execute(
+            update(MaterialRequest)
+            .where(
+                MaterialRequest.draft_id == draft_id,
+                MaterialRequest.telegram_user_id == telegram_user_id,
+                MaterialRequest.status == "draft",
+            )
+            .values(status="sending", updated_at=datetime.now(timezone.utc))
+            .returning(MaterialRequest.id)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def assign_number(
+        self,
+        session: AsyncSession,
+        *,
+        draft_id: str,
+        counter: int,
+        request_number: str,
+    ) -> None:
+        """
+        Записывает порядковый номер и счётчик после успешного increment_daily_counter.
+        Вызывать только внутри транзакции claim_for_sending.
+        """
+        await session.execute(
+            update(MaterialRequest)
+            .where(MaterialRequest.draft_id == draft_id)
+            .values(
+                counter=counter,
+                request_number=request_number,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+
     async def increment_daily_counter(
         self, session: AsyncSession, *, chat_id: int, counter_date: date
     ) -> int:

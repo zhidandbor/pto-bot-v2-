@@ -58,6 +58,7 @@ def create_module(container: object) -> BotModule:  # type: ignore[type-arg]
             rate_limited=True,
         )
     ]
-    module = MaterialsModule(router=router, cmds=cmds)
-    container.registry.register_module(module)  # type: ignore[attr-defined]
-    return module
+    # FIX: регистрация — задача ModuleLoader.
+    # container.registry.register_module() вызывается ядром автоматически
+    # после возврата модуля из factory. Двойная регистрация устранена.
+    return MaterialsModule(router=router, cmds=cmds)
