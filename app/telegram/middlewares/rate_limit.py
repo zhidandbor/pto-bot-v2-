@@ -32,8 +32,17 @@ class RateLimitMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         command = text.lstrip("/").split("@")[0].split()[0]
-        spec = self.registry.get_command(command)
-        if spec is None or getattr(spec, "rate_limit_exempt", False):
+        spec = self.registry.get_command_spec(command)  # was: get_command()
+
+        if spec is None:
+            # Unknown command — not registered, no rate limit applied.
+            return await handler(event, data)
+        if spec.rate_limit_exempt:
+            # Absolute exemption (e.g. /knowledge).
+            return await handler(event, data)
+        if not spec.rate_limited:
+            # Command is not flagged as a rate-limited operation
+            # (e.g. /help, /object_list, admin config commands).
             return await handler(event, data)
 
         session = data["session"]

@@ -75,9 +75,9 @@ class RBACMiddleware(BaseMiddleware):
         text: str = message.text or ""
         if text.startswith("/"):
             command = text.lstrip("/").split("@")[0].split()[0]
-            spec = self.registry.get_command(command)
+            spec = self.registry.get_command_spec(command)  # was: get_command()
             if spec is not None:
-                required: str = spec.role
+                required: str = spec.required_role  # was: spec.role
                 if _ROLE_ORDER.get(role, 0) < _ROLE_ORDER.get(required, 1):
                     await message.answer("\u26d4 Недостаточно прав.")
                     return None
