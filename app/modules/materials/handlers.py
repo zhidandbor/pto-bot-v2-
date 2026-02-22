@@ -111,20 +111,19 @@ def build_router(service: MaterialsService) -> Router:
             await callback.answer("Неверный формат callback.", show_alert=True)
             return
 
-        # Немедленный ответ Telegram (callback должен быть подтверждён в течение 30 с)
-        await callback.answer("Принято, формирую и отправляю...")
-        # UX: сообщаем о начале обработки, но клавиатуру ещё не трогаем
-        await callback.message.reply(
-            "⏳ Принято. Формирую файл заявки и отправляю на проверку..."
-        )
+        # Немедленный ответ Telegram (обязателен в течение 30 с)
+        await callback.answer("Принято, обрабатываю...")
+        # FIX TEXT: нейтральный текст — описывает весь путь (проверка + формирование),
+        # а не только Excel-генерацию; остаётся верным и при cooldown-отказе.
+        await callback.message.reply("⏳ Проверяю и формирую заявку...")
 
         result = await service.confirm(
             draft_id=draft_id,
             telegram_user_id=callback.from_user.id,
         )
 
-        # FIX: удаляем клавиатуру ТОЛЬКО если повтор не нужен.
-        # При cooldown result.keep_keyboard=True: кнопки остаются, пользователь может нажать подтвердить позже.
+        # Удаляем клавиатуру только если повтор не нужен.
+        # При cooldown result.keep_keyboard=True: кнопки остаются.
         if not result.keep_keyboard:
             try:
                 await callback.message.edit_reply_markup(reply_markup=None)
