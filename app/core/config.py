@@ -39,6 +39,5 @@ class Settings(BaseSettings):
     pending_action_ttl_seconds: int = Field(default=600, alias="PENDING_ACTION_TTL_SECONDS")
 
     # Comma-separated list of module names to load at startup.
-    # Example: ENABLED_MODULES=materials
-    # Default: materials (required module)
-    enabled_modules: str = Field(default="materials", alias="ENABLED_MODULES")
+    # Example: ENABLED_MODULES=requests,knowledge,letters
+    enabled_modules: str = Field(default="", alias="ENABLED_MODULES")

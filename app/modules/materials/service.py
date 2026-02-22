@@ -5,7 +5,6 @@ import secrets
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
-from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -22,7 +21,6 @@ from app.services.settings_service import SettingsService
 logger = get_logger(__name__)
 
 _MAT_SCOPE = "mat_chat"
-_MSK = ZoneInfo("Europe/Moscow")
 
 
 def _new_draft_id() -> str:
@@ -95,7 +93,6 @@ class MaterialsService:
         text: str,
     ) -> tuple[object | None, str, str]:
         """Return (obj, lines_text, hard_error)."""
-        # 1) Normal case: multi-line message (first line object, rest items)
         raw = [ln.strip() for ln in text.splitlines() if ln.strip()]
         if not raw:
             return None, "", "Сообщение пустое."
@@ -109,33 +106,28 @@ class MaterialsService:
                 )
             return found[0], "\n".join(raw[1:]), ""
 
-        # 2) Resilient case: Telegram client sometimes sends as one line or user pasted into one line
+        # Если реально прилетела одна строка — корректно обработать можно только 1 позицию.
+        # Для списков из 2+ позиций без \n границы строк восстановить невозможно.
         one = raw[0]
         words = one.split()
-        if len(words) < 3:
-            return None, "", (
-                "⚠️ В личном чате нужно указать объект первой строкой.\n\n"
-                "Пример:\nПС 55\nуголок г/к (50х50х5, L=6 м) - 0,156 т"
-            )
+        max_prefix = min(6, max(2, len(words) - 1))
 
-        max_prefix = min(6, len(words) - 1)
         for n in range(max_prefix, 1, -1):
             cand = " ".join(words[:n]).strip()
             rest = " ".join(words[n:]).strip()
             if not rest:
                 continue
-
             found = await self.objects_repo.search(session, cand, limit=3)  # type: ignore[arg-type]
             if not found:
                 continue
-
-            # verify that rest looks like materials
             pr = parse_materials_message(rest)
-            if pr.lines:
+            if pr.lines and len(pr.lines) == 1:
                 return found[0], rest, ""
 
         return None, "", (
-            "⚠️ В личном чате нужно указать объект первой строкой.\n\n"
+            "⚠️ Не удалось разобрать сообщение.\n\n"
+            "В личном чате нужно отправить объект первой строкой, а материалы — со 2-й строки, "
+            "каждый материал с новой строки.\n\n"
             "Пример:\nПС 55\nуголок г/к (50х50х5, L=6 м) - 0,156 т"
         )
 
@@ -176,7 +168,7 @@ class MaterialsService:
 
                 recipient_email = await self.settings_service.get_recipient_email(session)
 
-                today = datetime.now(_MSK).date()
+                today = date.today()
                 ps_number = (
                     getattr(obj, "ps_number", None)
                     or getattr(obj, "ps_name", None)

@@ -106,12 +106,7 @@ def build_container(settings: Settings) -> Container:
     for spec in core_commands:
         registry._commands[spec.command] = spec
 
-    # Load enabled modules from env (comma-separated).
-    enabled = [m.strip() for m in (settings.enabled_modules or "").split(",") if m.strip()]
-    # materials is required for this bot and must be loaded by default.
-    if "materials" not in enabled:
-        enabled.insert(0, "materials")
-
+    enabled = [m.strip() for m in settings.enabled_modules.split(",") if m.strip()]
     module_loader = ModuleLoader(enabled_modules=enabled)
 
     users_repo = UsersRepository()
