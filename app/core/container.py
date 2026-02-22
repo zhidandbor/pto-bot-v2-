@@ -64,9 +64,6 @@ class Container:
     excel_reader: ExcelReader
 
     async def startup(self) -> None:
-        # Create a dedicated async session for startup initialization.
-        # initialize_defaults() is transactional: sets recipient_email and
-        # cooldown_minutes only if not already present in the DB.
         async with self.session_factory() as session:
             async with session.begin():
                 await self.settings_service.initialize_defaults(session)
@@ -82,12 +79,9 @@ def build_container(settings: Settings) -> Container:
 
     registry = ModuleRegistry()
 
-    # Core commands shown in Telegram menu. Only required/actual commands are registered.
-    # NOTE: /commands is admin-only; /help does NOT list all commands.
     core_commands = [
         CommandSpec("start", "О боте", "user", False, False),
         CommandSpec("help", "Справка", "user", False, False),
-        # /materials cooldown handled by module service (after confirm), not middleware.
         CommandSpec("materials", "Заявка на материалы", "user", False, False),
 
         CommandSpec("commands", "Список админских команд", "admin", False, False),
@@ -110,10 +104,14 @@ def build_container(settings: Settings) -> Container:
         CommandSpec("admin_list", "Список администраторов", "superadmin", False, False),
     ]
     for spec in core_commands:
-        registry._commands[spec.command] = spec  # internal registration of core commands
+        registry._commands[spec.command] = spec
 
-    # Load enabled modules from env (comma-separated). Empty string → no modules.
-    enabled = [m.strip() for m in settings.enabled_modules.split(",") if m.strip()]
+    # Load enabled modules from env (comma-separated).
+    enabled = [m.strip() for m in (settings.enabled_modules or "").split(",") if m.strip()]
+    # materials is required for this bot and must be loaded by default.
+    if "materials" not in enabled:
+        enabled.insert(0, "materials")
+
     module_loader = ModuleLoader(enabled_modules=enabled)
 
     users_repo = UsersRepository()
