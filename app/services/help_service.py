@@ -9,17 +9,11 @@ from app.services.rbac import RBACService
 from app.services.settings_service import SettingsService
 
 
-_ROLE_ORDER: dict[str, int] = {"superadmin": 3, "admin": 2, "user": 1, "blocked": 0}
-
-
 @dataclass(frozen=True, slots=True)
 class HelpService:
     registry: ModuleRegistry
     rbac: RBACService
     settings_service: SettingsService
-
-    def _role_allows(self, user_role: str, required_role: str) -> bool:
-        return _ROLE_ORDER.get(user_role, 0) >= _ROLE_ORDER.get(required_role, 1)
 
     async def get_start_text(self, session: AsyncSession, role: str) -> str:
         if role == "blocked":
@@ -30,7 +24,7 @@ class HelpService:
 
         return (
             "PTO-bot запущен.\n"
-            "Команды: /help\n\n"
+            "Главное меню: /start, /help, /materials\n\n"
             f"Роль: {role}\n"
             f"Email получателя по умолчанию: {recipient or 'не задан'}\n"
             f"Cooldown: {cooldown} мин."
@@ -40,15 +34,21 @@ class HelpService:
         if role == "blocked":
             return "⛔ Нет доступа. Попросите администратора добавить вас (для личных сообщений)."
 
-        lines: list[str] = ["📖 Доступные команды:"]
-        for spec in self.registry.all_commands():
-            if self._role_allows(role, spec.required_role):
-                lines.append(f"/{spec.command} — {spec.description}")
+        lines: list[str] = [
+            "📖 Справка PTO-bot",
+            "",
+            "• /materials — создать заявку на материалы (далее следуйте подсказкам бота).",
+            "• В личном чате доступ требует разрешения администратора.",
+        ]
 
-        # Доп. секции справки от модулей (если модули их предоставляют)
+        if role in ("admin", "superadmin"):
+            lines.append("• /commands — список админских команд.")
+
+        # Доп. секции справки от модулей
         for section in self.registry.help_sections():
-            if section.strip():
+            s = (section or "").strip()
+            if s:
                 lines.append("")
-                lines.append(section.strip())
+                lines.append(s)
 
         return "\n".join(lines)

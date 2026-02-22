@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
@@ -32,25 +33,24 @@ class RateLimitMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         command = text.lstrip("/").split("@")[0].split()[0]
-        spec = self.registry.get_command_spec(command)  # was: get_command()
+
+        # /materials is a start command; module handles cooldown after confirm.
+        if command == "materials":
+            return await handler(event, data)
+
+        spec = self.registry.get_command_spec(command)
 
         if spec is None:
-            # Unknown command — not registered, no rate limit applied.
             return await handler(event, data)
         if spec.rate_limit_exempt:
-            # Absolute exemption (e.g. /knowledge).
             return await handler(event, data)
         if not spec.rate_limited:
-            # Command is not flagged as a rate-limited operation
-            # (e.g. /help, /object_list, admin config commands).
             return await handler(event, data)
 
         session = data["session"]
         user_id: int = message.from_user.id
         is_group: bool = message.chat.type in ("group", "supergroup")
 
-        # Group: one shared cooldown per chat (all members share the quota).
-        # Private: individual cooldown per user.
         scope_type = "chat" if is_group else "user"
         scope_id = message.chat.id if is_group else user_id
 
@@ -60,8 +60,13 @@ class RateLimitMiddleware(BaseMiddleware):
             scope_id=scope_id,
         )
         if not is_allowed:
+            now = datetime.now().astimezone()
+            until = now + timedelta(seconds=int(wait_seconds))
             minutes = max(1, (wait_seconds + 59) // 60)
-            await message.answer(f"\u23f3 Лимит заявок. Повторите через {minutes} мин.")
+            await message.answer(
+                "⏳ Лимит заявок. "
+                f"Повторите через {minutes} мин. (до {until:%H:%M})."
+            )
             return None
 
         return await handler(event, data)

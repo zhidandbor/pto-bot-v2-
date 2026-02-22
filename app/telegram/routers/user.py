@@ -8,7 +8,7 @@ from aiogram.types import Message
 def router(container: object) -> Router:  # type: ignore[type-arg]
     r = Router(name="user")
 
-    @r.message(Command("start", "sart"))
+    @r.message(Command("start"))
     async def cmd_start(message: Message, **kwargs: object) -> None:
         session = kwargs["session"]
         role: str = kwargs.get("user_role", "user")  # type: ignore[assignment]
@@ -21,9 +21,5 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
         role: str = kwargs.get("user_role", "user")  # type: ignore[assignment]
         text = await container.help_service.get_help_text(session, role)  # type: ignore[attr-defined]
         await message.answer(text)
-
-    @r.message(Command("object_search"))
-    async def cmd_object_search(message: Message, **kwargs: object) -> None:
-        await message.answer("\U0001f50d Введите название объекта для поиска.")
 
     return r

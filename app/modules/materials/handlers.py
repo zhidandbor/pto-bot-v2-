@@ -15,12 +15,12 @@ logger = get_logger(__name__)
 _INSTRUCTION = (
     "📦 <b>Заявка на материалы</b>\n\n"
     "Отправьте список материалов — каждый с новой строки:\n\n"
-    "<code>[Имя], [Тип], [Количество] [Единицы]</code>\n\n"
+    "<code>[Имя] ([Тип]) - [Количество] [Единицы]</code>\n\n"
     "<b>Пример:</b>\n"
-    "<code>уголок г/к, 50х50х5 L=6 м, 0,156 т\n"
-    "кабель ВВГнг 3х2.5, 100 м\n"
-    "арматура, d8, 300 кг</code>\n\n"
-    "Единицы: м, п.м, м², м³, кг, т, шт., компл., уп., рул., л и их варианты.\n\n"
+    "<code>уголок г/к (50х50х5 L=6 м) - 0,156 т\n"
+    "кабель ВВГнг 3х2.5 - 100 м\n"
+    "арматура (d8) - 300 кг</code>\n\n"
+    "Десятичный разделитель: "," или "." (в Excel будет запятая).\n\n"
     "<i>В личном чате укажите объект первой строкой "
     "(например: «ПС 55» или «Левашово»).</i>"
 )
@@ -29,13 +29,8 @@ _INSTRUCTION = (
 def build_router(service: MaterialsService) -> Router:
     r = Router(name="materials")
 
-    # ------------------------------------------------------------------
-    # /materials — запуск
-    # ------------------------------------------------------------------
     @r.message(Command("materials"))
-    async def cmd_materials(
-        message: Message, state: FSMContext, **kwargs: object
-    ) -> None:
+    async def cmd_materials(message: Message, state: FSMContext, **kwargs: object) -> None:
         if message.from_user is None:
             return
 
@@ -46,26 +41,16 @@ def build_router(service: MaterialsService) -> Router:
         if not allowed:
             minutes, secs = divmod(remaining, 60)
             await message.reply(
-                f"⏱ Следующую заявку на материалы можно отправить через "
-                f"{minutes} мин. {secs} сек."
+                f"⏱ Следующую заявку на материалы можно отправить через {minutes} мин. {secs} сек."
             )
             return
 
         await state.set_state(MaterialsFSM.waiting_list)
         await message.reply(_INSTRUCTION, parse_mode="HTML")
-        logger.info(
-            "materials_started",
-            chat_id=message.chat.id,
-            user_id=message.from_user.id,
-        )
+        logger.info("materials_started", chat_id=message.chat.id, user_id=message.from_user.id)
 
-    # ------------------------------------------------------------------
-    # Текст заявки в состоянии waiting_list
-    # ------------------------------------------------------------------
     @r.message(MaterialsFSM.waiting_list, F.text)
-    async def on_materials_list(
-        message: Message, state: FSMContext, **kwargs: object
-    ) -> None:
+    async def on_materials_list(message: Message, state: FSMContext, **kwargs: object) -> None:
         if message.from_user is None or not message.text:
             return
 
@@ -88,20 +73,10 @@ def build_router(service: MaterialsService) -> Router:
             result.preview_text,
             reply_markup=confirm_cancel_kb(result.draft_id),
         )
-        logger.info(
-            "materials_preview_sent",
-            draft_id=result.draft_id,
-            user_id=message.from_user.id,
-            chat_id=message.chat.id,
-        )
+        logger.info("materials_preview_sent", draft_id=result.draft_id, user_id=message.from_user.id, chat_id=message.chat.id)
 
-    # ------------------------------------------------------------------
-    # Callback: ✅ Подтвердить  (mat:confirm:{draft_id})
-    # ------------------------------------------------------------------
     @r.callback_query(F.data.startswith("mat:confirm:"))
-    async def on_confirm(
-        callback: CallbackQuery, **kwargs: object
-    ) -> None:
+    async def on_confirm(callback: CallbackQuery, **kwargs: object) -> None:
         if callback.from_user is None or callback.message is None:
             await callback.answer("Ошибка данных.", show_alert=True)
             return
@@ -111,19 +86,11 @@ def build_router(service: MaterialsService) -> Router:
             await callback.answer("Неверный формат callback.", show_alert=True)
             return
 
-        # Немедленный ответ Telegram (обязателен в течение 30 с)
         await callback.answer("Принято, обрабатываю...")
-        # FIX TEXT: нейтральный текст — описывает весь путь (проверка + формирование),
-        # а не только Excel-генерацию; остаётся верным и при cooldown-отказе.
         await callback.message.reply("⏳ Проверяю и формирую заявку...")
 
-        result = await service.confirm(
-            draft_id=draft_id,
-            telegram_user_id=callback.from_user.id,
-        )
+        result = await service.confirm(draft_id=draft_id, telegram_user_id=callback.from_user.id)
 
-        # Удаляем клавиатуру только если повтор не нужен.
-        # При cooldown result.keep_keyboard=True: кнопки остаются.
         if not result.keep_keyboard:
             try:
                 await callback.message.edit_reply_markup(reply_markup=None)
@@ -131,20 +98,10 @@ def build_router(service: MaterialsService) -> Router:
                 pass
 
         await callback.message.reply(result.message)
-        logger.info(
-            "materials_confirm_result",
-            draft_id=draft_id,
-            ok=result.ok,
-            user_id=callback.from_user.id,
-        )
+        logger.info("materials_confirm_result", draft_id=draft_id, ok=result.ok, user_id=callback.from_user.id)
 
-    # ------------------------------------------------------------------
-    # Callback: ❌ Отменить  (mat:cancel:{draft_id})
-    # ------------------------------------------------------------------
     @r.callback_query(F.data.startswith("mat:cancel:"))
-    async def on_cancel(
-        callback: CallbackQuery, **kwargs: object
-    ) -> None:
+    async def on_cancel(callback: CallbackQuery, **kwargs: object) -> None:
         if callback.from_user is None or callback.message is None:
             await callback.answer("Ошибка данных.", show_alert=True)
             return
@@ -160,15 +117,8 @@ def build_router(service: MaterialsService) -> Router:
         except Exception:
             pass
 
-        msg = await service.cancel(
-            draft_id=draft_id,
-            telegram_user_id=callback.from_user.id,
-        )
+        msg = await service.cancel(draft_id=draft_id, telegram_user_id=callback.from_user.id)
         await callback.message.reply(msg)
-        logger.info(
-            "materials_cancel_result",
-            draft_id=draft_id,
-            user_id=callback.from_user.id,
-        )
+        logger.info("materials_cancel_result", draft_id=draft_id, user_id=callback.from_user.id)
 
     return r

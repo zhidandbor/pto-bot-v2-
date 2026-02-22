@@ -18,6 +18,8 @@ from app.db.repositories.rate_limits import RateLimitsRepository
 from app.db.repositories.settings import SettingsRepository
 from app.db.repositories.user_contexts import UserContextsRepository
 from app.db.repositories.users import UsersRepository
+from app.integrations.excel_reader import ExcelReader
+from app.integrations.smtp_mailer import SmtpMailer
 from app.services.admin_service import AdminService
 from app.services.audit_service import AuditService
 from app.services.context_resolver import ContextResolver
@@ -26,8 +28,6 @@ from app.services.help_service import HelpService
 from app.services.rate_limiter import RateLimiter
 from app.services.rbac import RBACService
 from app.services.settings_service import SettingsService
-from app.integrations.excel_reader import ExcelReader
-from app.integrations.smtp_mailer import SmtpMailer
 
 logger = get_logger(__name__)
 
@@ -82,11 +82,16 @@ def build_container(settings: Settings) -> Container:
 
     registry = ModuleRegistry()
 
+    # Core commands shown in Telegram menu. Only required/actual commands are registered.
+    # NOTE: /commands is admin-only; /help does NOT list all commands.
     core_commands = [
         CommandSpec("start", "О боте", "user", False, False),
-        CommandSpec("sart", "О боте (алиас)", "user", False, False),
         CommandSpec("help", "Справка", "user", False, False),
-        CommandSpec("object_search", "Поиск объекта (личка)", "user", False, False),
+        # /materials cooldown handled by module service (after confirm), not middleware.
+        CommandSpec("materials", "Заявка на материалы", "user", False, False),
+
+        CommandSpec("commands", "Список админских команд", "admin", False, False),
+
         CommandSpec("object_import", "Импорт объектов из Excel", "admin", False, False),
         CommandSpec("recipient_email", "Установить email получателя", "admin", False, False),
         CommandSpec("time", "Установить cooldown (мин)", "admin", False, False),
@@ -99,11 +104,10 @@ def build_container(settings: Settings) -> Container:
         CommandSpec("user_add", "Разрешить пользователя в личке", "admin", False, False),
         CommandSpec("user_del", "Запретить пользователя в личке", "admin", False, False),
         CommandSpec("user_list", "Список разрешённых пользователей", "admin", False, False),
+
         CommandSpec("admin_add", "Добавить администратора", "superadmin", False, False),
         CommandSpec("admin_del", "Удалить администратора", "superadmin", False, False),
         CommandSpec("admin_list", "Список администраторов", "superadmin", False, False),
-        CommandSpec("module", "Команда модуля (вызов)", "user", True, True),
-        CommandSpec("knowledge", "Команда базы знаний (пример)", "user", True, False, rate_limit_exempt=True),
     ]
     for spec in core_commands:
         registry._commands[spec.command] = spec  # internal registration of core commands
