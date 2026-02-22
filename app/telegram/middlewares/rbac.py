@@ -47,7 +47,8 @@ class RBACMiddleware(BaseMiddleware):
         session: AsyncSession = data["session"]
 
         # --- callback_query path ---
-        # callback_query MUST also go through RBAC; previously it defaulted to "user".
+        # Role is resolved the same way as for messages; "blocked" users are
+        # denied at this point so no callback handler can be reached.
         if event.callback_query is not None:
             cq: CallbackQuery = event.callback_query
             if cq.from_user is not None:
@@ -57,8 +58,13 @@ class RBACMiddleware(BaseMiddleware):
                 is_group_cq = chat_type in ("group", "supergroup")
                 role = await _resolve_role(self.rbac, session, cq.from_user.id, is_group_cq)
                 data["user_role"] = role
+                if role == "blocked":
+                    await cq.answer("\u26d4 Нет доступа.", show_alert=True)
+                    return None
             else:
+                # No from_user — discard silently.
                 data["user_role"] = "blocked"
+                return None
             return await handler(event, data)
 
         # --- message path ---
@@ -75,9 +81,9 @@ class RBACMiddleware(BaseMiddleware):
         text: str = message.text or ""
         if text.startswith("/"):
             command = text.lstrip("/").split("@")[0].split()[0]
-            spec = self.registry.get_command_spec(command)  # was: get_command()
+            spec = self.registry.get_command_spec(command)
             if spec is not None:
-                required: str = spec.required_role  # was: spec.role
+                required: str = spec.required_role
                 if _ROLE_ORDER.get(role, 0) < _ROLE_ORDER.get(required, 1):
                     await message.answer("\u26d4 Недостаточно прав.")
                     return None
