@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
+from aiogram.filters import BaseFilter
 from aiogram.types import CallbackQuery, Message, TelegramObject, Update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +30,34 @@ async def _resolve_role(
     return "blocked"
 
 
+class RequireRole(BaseFilter):
+    """Aiogram filter for callback handlers that require a minimum role.
+
+    Role is already resolved by RBACMiddleware and stored in data["user_role"].
+    RBACMiddleware must be registered before this filter is used.
+
+    Usage::
+
+        @router.callback_query(RequireRole("admin"), F.data.startswith("admin:"))
+        async def my_admin_callback(callback: CallbackQuery, ...) -> None:
+            ...
+
+    Roles in ascending order: "blocked" < "user" < "admin" < "superadmin".
+    Passing "admin" means both "admin" and "superadmin" are allowed.
+    """
+
+    def __init__(self, min_role: str) -> None:
+        self.min_role = min_role
+        self._required: int = _ROLE_ORDER.get(min_role, 1)
+
+    async def __call__(self, callback: CallbackQuery, **data: Any) -> bool:
+        role: str = data.get("user_role", "blocked")
+        if _ROLE_ORDER.get(role, 0) >= self._required:
+            return True
+        await callback.answer("\u26d4 \u041d\u0435\u0434\u043e\u0441\u0442\u0430\u0442\u043e\u0447\u043d\u043e \u043f\u0440\u0430\u0432.", show_alert=True)
+        return False
+
+
 class RBACMiddleware(BaseMiddleware):
     def __init__(self, rbac: RBACService, registry: ModuleRegistry) -> None:
         self.rbac = rbac
@@ -49,6 +78,7 @@ class RBACMiddleware(BaseMiddleware):
         # --- callback_query path ---
         # Role is resolved the same way as for messages; "blocked" users are
         # denied at this point so no callback handler can be reached.
+        # Finer-grained role checks (e.g. "admin") are delegated to RequireRole.
         if event.callback_query is not None:
             cq: CallbackQuery = event.callback_query
             if cq.from_user is not None:
@@ -59,7 +89,7 @@ class RBACMiddleware(BaseMiddleware):
                 role = await _resolve_role(self.rbac, session, cq.from_user.id, is_group_cq)
                 data["user_role"] = role
                 if role == "blocked":
-                    await cq.answer("\u26d4 Нет доступа.", show_alert=True)
+                    await cq.answer("\u26d4 \u041d\u0435\u0442 \u0434\u043e\u0441\u0442\u0443\u043f\u0430.", show_alert=True)
                     return None
             else:
                 # No from_user — discard silently.
@@ -85,7 +115,7 @@ class RBACMiddleware(BaseMiddleware):
             if spec is not None:
                 required: str = spec.required_role
                 if _ROLE_ORDER.get(role, 0) < _ROLE_ORDER.get(required, 1):
-                    await message.answer("\u26d4 Недостаточно прав.")
+                    await message.answer("\u26d4 \u041d\u0435\u0434\u043e\u0441\u0442\u0430\u0442\u043e\u0447\u043d\u043e \u043f\u0440\u0430\u0432.")
                     return None
 
         return await handler(event, data)
