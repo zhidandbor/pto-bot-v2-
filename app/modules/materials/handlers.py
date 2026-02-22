@@ -69,7 +69,6 @@ def build_router(service: MaterialsService) -> Router:
         if message.from_user is None or not message.text:
             return
 
-        # Сбрасываем состояние ДО вызова сервиса — пользователь не застрянет в FSM
         await state.clear()
 
         is_private = message.chat.type == "private"
@@ -112,12 +111,9 @@ def build_router(service: MaterialsService) -> Router:
             await callback.answer("Неверный формат callback.", show_alert=True)
             return
 
-        # Сразу отвечаем на callback и убираем кнопки (TZ §13.5)
+        # Немедленный ответ Telegram (callback должен быть подтверждён в течение 30 с)
         await callback.answer("Принято, формирую и отправляю...")
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        # UX: сообщаем о начале обработки, но клавиатуру ещё не трогаем
         await callback.message.reply(
             "⏳ Принято. Формирую файл заявки и отправляю на проверку..."
         )
@@ -126,6 +122,15 @@ def build_router(service: MaterialsService) -> Router:
             draft_id=draft_id,
             telegram_user_id=callback.from_user.id,
         )
+
+        # FIX: удаляем клавиатуру ТОЛЬКО если повтор не нужен.
+        # При cooldown result.keep_keyboard=True: кнопки остаются, пользователь может нажать подтвердить позже.
+        if not result.keep_keyboard:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
         await callback.message.reply(result.message)
         logger.info(
             "materials_confirm_result",

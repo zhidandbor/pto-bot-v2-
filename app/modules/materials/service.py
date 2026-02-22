@@ -36,6 +36,8 @@ class PreviewResult(NamedTuple):
 class ConfirmResult(NamedTuple):
     ok: bool
     message: str
+    # FIX: флаг для хендлера — не удалять инлайн-клавиатуру (при cooldown пользователь должен повторно нажать кнопку)
+    keep_keyboard: bool = False
 
 
 def _build_obj_data(obj: object) -> dict:  # type: ignore[type-arg]
@@ -213,7 +215,6 @@ class MaterialsService:
     ) -> ConfirmResult:
         async with self.session_factory() as session:
             async with session.begin():
-                # Атомарный переход draft → sending
                 claimed = await self.materials_repo.claim_for_sending(
                     session, draft_id=draft_id, telegram_user_id=telegram_user_id
                 )
@@ -223,7 +224,6 @@ class MaterialsService:
                         return ConfirmResult(False, "Черновик не найден.")
                     if req.telegram_user_id != telegram_user_id:
                         return ConfirmResult(False, "Нет доступа к этой заявке.")
-                    # FIX RETRY UX: явное сообщение при failed — не генеричное "уже обработано"
                     if req.status == "failed":
                         return ConfirmResult(
                             False,
@@ -235,9 +235,7 @@ class MaterialsService:
                 req = await self.materials_repo.get_by_draft_id(session, draft_id)
                 scope_id = req.chat_id or telegram_user_id  # type: ignore[union-attr]
 
-                # FIX COOLDOWN BYPASS: повторная проверка cooldown внутри confirm-транзакции.
-                # К моменту confirm мог активироваться cooldown от другой заявки в той же группе.
-                # Если cooldown активен: откатываем claim (sending → draft) атомарно в той же транзакции.
+                # Cooldown-gate: повторная проверка внутри транзакции
                 cooldown_minutes = await self.settings_service.get_cooldown_minutes(session)
                 if cooldown_minutes > 0:
                     rl_row = await self.rate_limits_repo.get(
@@ -253,19 +251,20 @@ class MaterialsService:
                         _next = _last + timedelta(minutes=cooldown_minutes)
                         if _now < _next:
                             remaining = int((_next - _now).total_seconds())
-                            # Откат: sending → draft (атомарно в этой же транзакции)
+                            # Откат claim в той же транзакции: sending → draft
                             await self.materials_repo.update_status(
                                 session, draft_id=draft_id, status="draft"
                             )
                             _m, _s = divmod(remaining, 60)
+                            # keep_keyboard=True: хендлер не удаляет клавиатуру
                             return ConfirmResult(
                                 False,
                                 f"⏱ Заявку пока нельзя отправить: cooldown активен.\n\n"
                                 f"Следующая отправка возможна через {_m} мин. {_s} сек.\n"
                                 "Нажмите «✅ Подтвердить» после окончания ожидания.",
+                                keep_keyboard=True,
                             )
 
-                # FIX COUNTER: инкремент при confirm, а не при preview
                 counter = await self.materials_repo.increment_daily_counter(
                     session, chat_id=scope_id, counter_date=req.request_date  # type: ignore[union-attr]
                 )
@@ -283,7 +282,6 @@ class MaterialsService:
                     req.recipient_email  # type: ignore[union-attr]
                     or await self.settings_service.get_recipient_email(session)
                 )
-                # cooldown_minutes уже прочитан выше (повторный DB-запрос исключён)
 
                 obj_data: dict = {}  # type: ignore[type-arg]
                 if req.object_id:  # type: ignore[union-attr]
