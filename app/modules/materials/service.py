@@ -81,7 +81,6 @@ class MaterialsService:
             if not row:
                 return True, 0
             now = datetime.now(timezone.utc)
-            # FIX TZ: astimezone для tz-aware, replace только для naive
             last_at = row.last_request_at
             if last_at.tzinfo is None:
                 last_at = last_at.replace(tzinfo=timezone.utc)
@@ -151,8 +150,6 @@ class MaterialsService:
                 ) if obj else "???"
                 draft_id = _new_draft_id()
 
-                # FIX COUNTER: counter=0, request_number=None
-                # Номер назначается атомарно в confirm() после успешного перехода статуса
                 await self.materials_repo.create_request(
                     session,
                     draft_id=draft_id,
@@ -205,7 +202,7 @@ class MaterialsService:
         return PreviewResult(draft_id=draft_id, preview_text=preview, hard_error="")
 
     # ------------------------------------------------------------------
-    # Шаг 2: confirm → claim → counter → Excel (thread) → email → статус → cooldown
+    # Шаг 2: confirm → claim → cooldown-check → counter → Excel → email → статус
     # ------------------------------------------------------------------
 
     async def confirm(
@@ -214,9 +211,9 @@ class MaterialsService:
         draft_id: str,
         telegram_user_id: int,
     ) -> ConfirmResult:
-        # --- FIX RACE: атомарный переход draft → sending, защита от дубликатов ---
         async with self.session_factory() as session:
             async with session.begin():
+                # Атомарный переход draft → sending
                 claimed = await self.materials_repo.claim_for_sending(
                     session, draft_id=draft_id, telegram_user_id=telegram_user_id
                 )
@@ -226,12 +223,49 @@ class MaterialsService:
                         return ConfirmResult(False, "Черновик не найден.")
                     if req.telegram_user_id != telegram_user_id:
                         return ConfirmResult(False, "Нет доступа к этой заявке.")
+                    # FIX RETRY UX: явное сообщение при failed — не генеричное "уже обработано"
+                    if req.status == "failed":
+                        return ConfirmResult(
+                            False,
+                            "❌ Предыдущая попытка отправки завершилась ошибкой.\n\n"
+                            "Создайте новую заявку командой /materials.",
+                        )
                     return ConfirmResult(False, "Уже обработано.")
 
                 req = await self.materials_repo.get_by_draft_id(session, draft_id)
+                scope_id = req.chat_id or telegram_user_id  # type: ignore[union-attr]
+
+                # FIX COOLDOWN BYPASS: повторная проверка cooldown внутри confirm-транзакции.
+                # К моменту confirm мог активироваться cooldown от другой заявки в той же группе.
+                # Если cooldown активен: откатываем claim (sending → draft) атомарно в той же транзакции.
+                cooldown_minutes = await self.settings_service.get_cooldown_minutes(session)
+                if cooldown_minutes > 0:
+                    rl_row = await self.rate_limits_repo.get(
+                        session, scope_type=_MAT_SCOPE, scope_id=scope_id
+                    )
+                    if rl_row is not None:
+                        _now = datetime.now(timezone.utc)
+                        _last = rl_row.last_request_at
+                        if _last.tzinfo is None:
+                            _last = _last.replace(tzinfo=timezone.utc)
+                        else:
+                            _last = _last.astimezone(timezone.utc)
+                        _next = _last + timedelta(minutes=cooldown_minutes)
+                        if _now < _next:
+                            remaining = int((_next - _now).total_seconds())
+                            # Откат: sending → draft (атомарно в этой же транзакции)
+                            await self.materials_repo.update_status(
+                                session, draft_id=draft_id, status="draft"
+                            )
+                            _m, _s = divmod(remaining, 60)
+                            return ConfirmResult(
+                                False,
+                                f"⏱ Заявку пока нельзя отправить: cooldown активен.\n\n"
+                                f"Следующая отправка возможна через {_m} мин. {_s} сек.\n"
+                                "Нажмите «✅ Подтвердить» после окончания ожидания.",
+                            )
 
                 # FIX COUNTER: инкремент при confirm, а не при preview
-                scope_id = req.chat_id or telegram_user_id  # type: ignore[union-attr]
                 counter = await self.materials_repo.increment_daily_counter(
                     session, chat_id=scope_id, counter_date=req.request_date  # type: ignore[union-attr]
                 )
@@ -249,7 +283,7 @@ class MaterialsService:
                     req.recipient_email  # type: ignore[union-attr]
                     or await self.settings_service.get_recipient_email(session)
                 )
-                cooldown_minutes = await self.settings_service.get_cooldown_minutes(session)
+                # cooldown_minutes уже прочитан выше (повторный DB-запрос исключён)
 
                 obj_data: dict = {}  # type: ignore[type-arg]
                 if req.object_id:  # type: ignore[union-attr]
@@ -336,7 +370,7 @@ class MaterialsService:
                 False,
                 f"❌ Не удалось отправить заявку на e-mail.\n\n"
                 f"Причина: {type(exc).__name__}\n\n"
-                "Попробуйте ещё раз позже или обратитесь к инженеру ПТО.",
+                "Создайте новую заявку командой /materials.",
             )
 
         # --- Успех: статус + cooldown ТОЛЬКО после успешной отправки (FR-MAT-10) ---

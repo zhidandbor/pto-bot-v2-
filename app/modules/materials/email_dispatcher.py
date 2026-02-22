@@ -16,6 +16,9 @@ logger = get_logger(__name__)
 # CR / LF — запрещенные символы в заголовках email (RFC 5322)
 _HEADER_INJECT_RE = re.compile(r"[\r\n]")
 
+# Типичный лимит корпоративных SMTP-серверов; Excel-заявка обычно не превышает 500 КБ
+_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 МБ
+
 
 def _sanitize_header(value: str, field: str) -> str:
     """
@@ -35,7 +38,7 @@ def _sanitize_header(value: str, field: str) -> str:
 def _sanitize_filename(name: str) -> str:
     """
     Удаляет CR/LF и двойные кавычки из имени файла для Content-Disposition.
-    Двойная кавычка в имени позволяет выйти из квотированной строки filename="...".
+    Двойная кавычка в имени позволяет выйти из filename="...".
     """
     clean = _HEADER_INJECT_RE.sub("", name)
     return clean.replace('"', "")
@@ -63,10 +66,19 @@ class MaterialsEmailDispatcher:
         if not self.settings.smtp_host:
             raise RuntimeError("SMTP_HOST не задан — отправка недоступна")
 
-        # FIX: санитация заголовков до подстановки в сообщение
+        # Санитация заголовков до подстановки в MIME
         safe_to = _sanitize_header(to_email, "To")
         safe_subject = _sanitize_header(subject, "Subject")
         safe_filename = _sanitize_filename(attachment_filename)
+
+        # FIX VALIDATION: ранняя проверка адреса и размера вложения
+        if not safe_to or "@" not in safe_to:
+            raise ValueError(f"Некорректный адрес получателя: {safe_to!r}")
+        if len(attachment_bytes) > _MAX_ATTACHMENT_BYTES:
+            raise ValueError(
+                f"Вложение слишком велико: {len(attachment_bytes):,} байт "
+                f"(лимит {_MAX_ATTACHMENT_BYTES:,} байт)"
+            )
 
         msg = email.mime.multipart.MIMEMultipart()
         msg["From"] = self.settings.mail_sender
