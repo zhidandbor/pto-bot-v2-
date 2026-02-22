@@ -4,18 +4,21 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-
 def router(container: object) -> Router:  # type: ignore[type-arg]
     r = Router(name="admin")
 
     @r.message(Command("object_list"))
     async def cmd_object_list(message: Message, **kwargs: object) -> None:
         session = kwargs["session"]
-        objects = await container.objects_repo.get_all(session)  # type: ignore[attr-defined]
+        objects = await container.objects_repo.list(session)  # type: ignore[attr-defined]
         if not objects:
             await message.answer("Объекты не найдены.")
             return
-        await message.answer("\U0001f4cb Объекты:\n" + "\n".join(f"\u2022 {o.title}" for o in objects))
+        lines = []
+        for o in objects:
+            title = o.ps_name or o.title_name or o.address or o.dedup_key
+            lines.append(f"• {o.id} — {title}")
+        await message.answer("📋 Объекты:\n" + "\n".join(lines))
 
     @r.message(Command("group_list"))
     async def cmd_group_list(message: Message, **kwargs: object) -> None:
