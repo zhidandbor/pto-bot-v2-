@@ -60,7 +60,8 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
 
         target_id = _parse_target_user_id(message)
         if target_id is None:
-            await message.answer("Формат: /admin_add <telegram_user_id> (или ответьте на сообщение пользователя).")
+            # FIX: <telegram_user_id> -> [telegram_user_id]
+            await message.answer("Формат: /admin_add [telegram_user_id] (или ответьте на сообщение пользователя).")
             return
 
         await container.admins_repo.add(session, target_id)  # type: ignore[attr-defined]
@@ -77,7 +78,8 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
 
         target_id = _parse_target_user_id(message)
         if target_id is None:
-            await message.answer("Формат: /admin_del <telegram_user_id> (или ответьте на сообщение пользователя).")
+            # FIX: <telegram_user_id> -> [telegram_user_id]
+            await message.answer("Формат: /admin_del [telegram_user_id] (или ответьте на сообщение пользователя).")
             return
 
         removed = await container.admins_repo.remove(session, target_id)  # type: ignore[attr-defined]

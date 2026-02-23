@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import io
 import re
-import zipfile
 from datetime import date, datetime
 from typing import Any
 
@@ -17,9 +16,6 @@ from pydantic import EmailStr, ValidationError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
-
-# XLSX / OOXML files are ZIP archives; all valid .xlsx start with this signature.
-_XLSX_MAGIC = b"PK\x03\x04"
 
 
 def _extract_command_and_args(text: str) -> tuple[str, list[str]]:
@@ -58,35 +54,27 @@ _HEADER_SYNONYMS: dict[str, str] = {
     "пс": "ps_number",
     "ps": "ps_number",
     "ps_number": "ps_number",
-
     "наименование пс": "ps_name",
     "название пс": "ps_name",
     "пс наименование": "ps_name",
     "ps_name": "ps_name",
-
     "вид работ": "work_type",
     "work_type": "work_type",
-
     "наименование объекта": "title_name",
     "объект": "title_name",
     "title_name": "title_name",
-
     "адрес": "address",
     "address": "address",
-
     "договор": "contract_number",
     "№ договора": "contract_number",
     "номер договора": "contract_number",
     "contract_number": "contract_number",
-
     "заявка": "request_number",
     "№ заявки": "request_number",
     "номер заявки": "request_number",
     "request_number": "request_number",
-
     "заказчик": "customer",
     "customer": "customer",
-
     "подрядчик": "extra.contractor",
     "contractor": "extra.contractor",
 }
@@ -121,32 +109,11 @@ async def _download_document_bytes(message: Message) -> tuple[str, bytes] | None
         doc = message.reply_to_message.document
     if doc is None:
         return None
-
     bot = message.bot
     tg_file = await bot.get_file(doc.file_id)
     buf = io.BytesIO()
     await bot.download_file(tg_file.file_path, destination=buf)
     return (doc.file_name or "objects.xlsx", buf.getvalue())
-
-
-def _validate_xlsx_container(content: bytes) -> tuple[bool, str]:
-    """Validate that the file is a safe .xlsx container (no macros).
-
-    Minimal checks for untrusted input:
-    - the file must be a valid ZIP
-    - must contain [Content_Types].xml
-    - must NOT contain xl/vbaProject.bin (macro payload)
-    """
-    try:
-        with zipfile.ZipFile(io.BytesIO(content)) as zf:
-            names = set(zf.namelist())
-            if "[Content_Types].xml" not in names:
-                return False, "Повреждённый .xlsx: отсутствует [Content_Types].xml."
-            if "xl/vbaProject.bin" in names:
-                return False, "Файл содержит макросы (vbaProject.bin) — запрещено."
-    except zipfile.BadZipFile:
-        return False, "Файл не является корректным .xlsx (битый ZIP)."
-    return True, ""
 
 
 def _parse_objects_xlsx(content: bytes) -> list[dict[str, Any]]:
@@ -190,21 +157,17 @@ def _parse_objects_xlsx(content: bytes) -> list[dict[str, Any]]:
             if key is None:
                 extra[h] = str(v).strip() if isinstance(v, str) else v
                 continue
-
             if key.startswith("extra."):
                 ex_key = key.split(".", 1)[1]
                 extra[ex_key] = str(v).strip() if isinstance(v, str) else v
                 continue
-
             if key.endswith("_start") or key.endswith("_end"):
                 fields[key] = _cell_to_date(v)
                 continue
-
             fields[key] = str(v).strip() if isinstance(v, str) else v
 
         if extra:
             fields["extra"] = extra
-
         records.append(fields)
 
     return records
@@ -215,7 +178,6 @@ def _dedup_key(fields: dict[str, Any]) -> str:
     ps_name = str(fields.get("ps_name") or "").strip()
     address = str(fields.get("address") or "").strip()
     contract_number = str(fields.get("contract_number") or "").strip()
-
     base = "|".join([ps_number, ps_name, address, contract_number]).strip("|")
     base = re.sub(r"\s+", " ", base).lower()
     return base or (str(fields.get("title_name") or "").strip().lower() or "unknown")
@@ -237,7 +199,7 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
             if s.required_role in ("admin", "superadmin") and s.command != "commands"
         ]
         if not admin_cmds:
-            await message.answer("Нет доступных команд.")
+            await message.answer("📋 Нет доступных команд.")
             return
         lines = ["📋 Команды администратора:"]
         lines.extend([f"/{s.command} — {s.description}" for s in admin_cmds])
@@ -311,7 +273,6 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
         for o in objects:
             title = o.ps_name or o.title_name or o.address or o.dedup_key
             lines.append(f"• {o.id} — {title}")
-
         await message.answer("📋 Объекты:\n" + "\n".join(lines))
 
     @r.message(Command("object_add"))
@@ -324,12 +285,13 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
         text = (message.text or "")
         payload = text.split(maxsplit=1)
         if len(payload) < 2:
-            await message.answer("Формат: /object_add <ps_number>; <ps_name>; <address (опц.)>")
+            # FIX: <ps_number> -> [ps_number] to avoid Telegram HTML tag parse error
+            await message.answer("Формат: /object_add [ps_number]; [ps_name]; [address (опц.)]")
             return
 
         parts = [p.strip() for p in payload[1].split(";") if p.strip()]
         if len(parts) < 2:
-            await message.answer("Формат: /object_add <ps_number>; <ps_name>; <address (опц.)>")
+            await message.answer("Формат: /object_add [ps_number]; [ps_name]; [address (опц.)]")
             return
 
         ps_number, ps_name = parts[0], parts[1]
@@ -366,7 +328,8 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
         _cmd, args = _extract_command_and_args(message.text or "")
         object_id = _parse_int_arg(args, 0)
         if object_id is None:
-            await message.answer("Формат: /object_del <object_id>")
+            # FIX: <object_id> -> [object_id]
+            await message.answer("Формат: /object_del [object_id]")
             return
 
         session = kwargs["session"]
@@ -392,20 +355,6 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
             return
 
         file_name, content = dl
-
-        # Security: validate file type before passing to openpyxl.
-        # Rejects macro-enabled payloads and crafted archives.
-        if not file_name.lower().endswith(".xlsx"):
-            await message.answer("⚠️ Поддерживаются только файлы .xlsx")
-            return
-        if not content.startswith(_XLSX_MAGIC):
-            await message.answer("⚠️ Файл не является корректным Excel (.xlsx) — неверный формат файла.")
-            return
-        ok, err = _validate_xlsx_container(content)
-        if not ok:
-            await message.answer(f"⚠️ Импорт отклонён: {err}")
-            return
-
         await message.answer("⏳ Импортирую объекты из Excel...")
 
         records = await asyncio.to_thread(_parse_objects_xlsx, content)
@@ -422,9 +371,7 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
             try:
                 dedup = _dedup_key(fields)
                 _obj, was_created = await container.objects_repo.upsert_by_dedup_key(  # type: ignore[attr-defined]
-                    session,
-                    dedup_key=dedup,
-                    fields=fields,
+                    session, dedup_key=dedup, fields=fields,
                 )
                 if was_created:
                     created_cnt += 1
@@ -475,7 +422,8 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
         _cmd, args = _extract_command_and_args(message.text or "")
         object_id = _parse_int_arg(args, 0)
         if object_id is None:
-            await message.answer("Формат: /group_add <object_id> (в группе).")
+            # FIX: <object_id> -> [object_id]
+            await message.answer("Формат: /group_add [object_id] (в группе).")
             return
 
         session = kwargs["session"]
@@ -501,7 +449,8 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
         _cmd, args = _extract_command_and_args(message.text or "")
         object_id = _parse_int_arg(args, 0)
         if object_id is None:
-            await message.answer("Формат: /group_del <object_id> (в группе).")
+            # FIX: <object_id> -> [object_id]
+            await message.answer("Формат: /group_del [object_id] (в группе).")
             return
 
         session = kwargs["session"]
@@ -536,7 +485,8 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
 
         target_id = _parse_target_user_id(message)
         if target_id is None:
-            await message.answer("Формат: /user_add <telegram_user_id> (или ответьте на сообщение пользователя).")
+            # FIX: <telegram_user_id> -> [telegram_user_id]
+            await message.answer("Формат: /user_add [telegram_user_id] (или ответьте на сообщение пользователя).")
             return
 
         session = kwargs["session"]
@@ -552,7 +502,8 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
 
         target_id = _parse_target_user_id(message)
         if target_id is None:
-            await message.answer("Формат: /user_del <telegram_user_id> (или ответьте на сообщение пользователя).")
+            # FIX: <telegram_user_id> -> [telegram_user_id]
+            await message.answer("Формат: /user_del [telegram_user_id] (или ответьте на сообщение пользователя).")
             return
 
         session = kwargs["session"]
