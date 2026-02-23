@@ -142,6 +142,7 @@ class MaterialsService:
         telegram_user_id: int,
         user_full_name: str | None,
         is_private: bool,
+        context_object_id: int | None = None,
     ) -> PreviewResult:
         async with self.session_factory() as session:
             async with session.begin():
@@ -230,9 +231,14 @@ class MaterialsService:
                             )
 
                 else:
-                    linked = await self.objects_repo.list_linked_objects(session, chat_id)
-                    if linked:
-                        obj = linked[0]
+                    # ContextResolverMiddleware may resolve a concrete object selection.
+                    # Honour it here to avoid duplicating context resolution logic.
+                    if context_object_id is not None:
+                        obj = await self.objects_repo.get_by_id(session, context_object_id)
+                    if obj is None:
+                        linked = await self.objects_repo.list_linked_objects(session, chat_id)
+                        if linked:
+                            obj = linked[0]
 
                 parse_result = parse_materials_message(lines_text)
                 if not parse_result.lines:
