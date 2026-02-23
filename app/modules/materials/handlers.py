@@ -64,12 +64,22 @@ def build_router(service: MaterialsService) -> Router:
             return
 
         is_private = message.chat.type == "private"
+
+        # For groups with multiple linked objects, ContextResolverMiddleware resolves
+        # the user's explicit object selection and stores it in data["context"].
+        # Pass it to build_preview() so the service honours the selection instead of
+        # falling back to list_linked_objects()[0].
+        # For private chats, build_preview() uses first-line search (ТЗ behaviour).
+        context = kwargs.get("context")
+        context_object_id: int | None = getattr(context, "object_id", None)
+
         result = await service.build_preview(
             text=message.text,
             chat_id=message.chat.id,
             telegram_user_id=message.from_user.id,
             user_full_name=message.from_user.full_name,
             is_private=is_private,
+            context_object_id=context_object_id,
         )
 
         if result.hard_error:
