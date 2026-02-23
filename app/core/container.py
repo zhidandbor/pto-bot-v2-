@@ -25,6 +25,7 @@ from app.services.audit_service import AuditService
 from app.services.context_resolver import ContextResolver
 from app.services.excel_import_service import ExcelImportService
 from app.services.help_service import HelpService
+from app.services.objects_excel_reader import ObjectsExcelReader
 from app.services.rate_limiter import RateLimiter
 from app.services.rbac import RBACService
 from app.services.settings_service import SettingsService
@@ -145,13 +146,13 @@ def build_container(settings: Settings) -> Container:
         audit=audit_service,
     )
     help_service = HelpService(registry=registry, rbac=rbac, settings_service=settings_service)
-    
+
     excel_import_service = ExcelImportService(
         session_factory=session_factory,
         reader=ObjectsExcelReader(),
         objects_repo=objects_repo,
         groups_repo=groups_repo,
-        excel_imports_repo=ExcelImportsRepository(),
+        excel_imports_repo=excel_imports_repo,
         audit=audit_service,
     )
 
