@@ -13,12 +13,13 @@ from app.services.settings_service import SettingsService
 
 @dataclass(frozen=True)
 class AdminService:
-    """Сервис административных операций.
+    """Facade for admin operations.
 
-    Инжектируется через Container и предоставляет единую точку входа
-    для операций управления объектами, группами и пользователями.
-    Текущие реализации находятся непосредственно в роутерах (admin.py,
-    superadmin.py); этот класс является точкой консолидации на будущее.
+    Business logic for object/group/user management lives in the individual
+    repositories and SettingsService.  This service is the DI-registered
+    orchestration point for operations that span multiple repositories or
+    require audit logging.  Admin router handlers currently access repositories
+    directly; future refactors can delegate through this service.
     """
 
     settings: Settings
