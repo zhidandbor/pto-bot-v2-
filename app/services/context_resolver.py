@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Protocol, runtime_checkable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,9 +16,22 @@ from app.services.rbac import RBACService
 logger = get_logger(__name__)
 
 
-def _display_name(obj: object) -> str:
+@runtime_checkable
+class _ObjectLike(Protocol):
+    """Structural type for an Object ORM row.
+
+    Defines the minimal attribute set required by ContextResolver helpers.
+    All attributes correspond to columns in the Object model.
+    """
+
+    id: int
+    title_name: Optional[str]
+    ps_name: Optional[str]
+
+
+def _display_name(obj: _ObjectLike) -> str:
     """Return a human-readable label for an Object row."""
-    return getattr(obj, "title_name", None) or getattr(obj, "ps_name", None) or f"#{getattr(obj, 'id', '?')}"
+    return obj.title_name or obj.ps_name or f"#{obj.id}"
 
 
 @dataclass(frozen=True)
