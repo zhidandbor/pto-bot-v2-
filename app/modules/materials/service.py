@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -22,9 +23,45 @@ logger = get_logger(__name__)
 
 _MAT_SCOPE = "mat_chat"
 
+# Шаблон распознавания объекта по первой строке в личном чате:
+# «ПС 24», «пс57», «24», «ПС 24 Реконструкция»
+_PS_HINT_RE = re.compile(r"^(?:пс\s*)?(\d+)\s*(.*)", re.IGNORECASE | re.DOTALL)
+
 
 def _new_draft_id() -> str:
     return secrets.token_hex(6)
+
+
+def _parse_object_hint(line: str) -> tuple[str | None, str | None]:
+    """
+    Разбирает первую строку в личном чате.
+
+    Возвращает (ps_number, work_type_hint):
+        «ПС 24»               → ("24", None)
+        «ПС 24 Реконструкция» → ("24", "Реконструкция")
+        «пс57»                → ("57", None)
+        «Ржевка»              → (None, None)  → полнотекстовый поиск
+    """
+    m = _PS_HINT_RE.match(line.strip())
+    if not m:
+        return None, None
+    ps_num = m.group(1)
+    work_type_hint = m.group(2).strip() or None
+    return ps_num, work_type_hint
+
+
+def _format_object_options(objects: list) -> str:  # type: ignore[type-arg]
+    """Форматирует список объектов для вывода пользователю."""
+    lines = []
+    for obj in objects:
+        ps = f"ПС {obj.ps_number}" if obj.ps_number else "ПС ?"
+        wt = obj.work_type or "(вид не указан)"
+        name = obj.ps_name or ""
+        entry = f"  • {ps} {wt}"
+        if name:
+            entry += f" — {name}"
+        lines.append(entry)
+    return "\n".join(lines)
 
 
 class PreviewResult(NamedTuple):
@@ -36,6 +73,7 @@ class PreviewResult(NamedTuple):
 class ConfirmResult(NamedTuple):
     ok: bool
     message: str
+    # FIX: флаг для хендлера — не удалять инлайн-клавиатуру (при cooldown пользователь должен повторно нажать кнопку)
     keep_keyboard: bool = False
 
 
@@ -66,15 +104,21 @@ class MaterialsService:
     settings_service: SettingsService
     email_dispatcher: MaterialsEmailDispatcher
 
+    # ------------------------------------------------------------------
+    # Cooldown: read-only, не обновляет last_request_at
+    # ------------------------------------------------------------------
+
     async def check_cooldown(self, *, scope_id: int) -> tuple[bool, int]:
+        """(allowed, remaining_seconds). НЕ обновляет last_request_at."""
         async with self.session_factory() as session:
             cooldown_minutes = await self.settings_service.get_cooldown_minutes(session)
             if cooldown_minutes <= 0:
                 return True, 0
-            row = await self.rate_limits_repo.get(session, scope_type=_MAT_SCOPE, scope_id=scope_id)
+            row = await self.rate_limits_repo.get(
+                session, scope_type=_MAT_SCOPE, scope_id=scope_id
+            )
             if not row:
                 return True, 0
-
             now = datetime.now(timezone.utc)
             last_at = row.last_request_at
             if last_at.tzinfo is None:
@@ -86,50 +130,9 @@ class MaterialsService:
                 return False, int((next_allowed - now).total_seconds())
             return True, 0
 
-    async def _resolve_private_input(
-        self,
-        *,
-        session: object,
-        text: str,
-    ) -> tuple[object | None, str, str]:
-        """Return (obj, lines_text, hard_error)."""
-        raw = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        if not raw:
-            return None, "", "Сообщение пустое."
-
-        if len(raw) >= 2:
-            found = await self.objects_repo.search(session, raw[0], limit=1)  # type: ignore[arg-type]
-            if not found:
-                return None, "", (
-                    "⚠️ В личном чате нужно указать объект первой строкой.\n\n"
-                    "Пример:\nПС 55\nуголок г/к (50х50х5, L=6 м) - 0,156 т"
-                )
-            return found[0], "\n".join(raw[1:]), ""
-
-        # Если реально прилетела одна строка — корректно обработать можно только 1 позицию.
-        # Для списков из 2+ позиций без \n границы строк восстановить невозможно.
-        one = raw[0]
-        words = one.split()
-        max_prefix = min(6, max(2, len(words) - 1))
-
-        for n in range(max_prefix, 1, -1):
-            cand = " ".join(words[:n]).strip()
-            rest = " ".join(words[n:]).strip()
-            if not rest:
-                continue
-            found = await self.objects_repo.search(session, cand, limit=3)  # type: ignore[arg-type]
-            if not found:
-                continue
-            pr = parse_materials_message(rest)
-            if pr.lines and len(pr.lines) == 1:
-                return found[0], rest, ""
-
-        return None, "", (
-            "⚠️ Не удалось разобрать сообщение.\n\n"
-            "В личном чате нужно отправить объект первой строкой, а материалы — со 2-й строки, "
-            "каждый материал с новой строки.\n\n"
-            "Пример:\nПС 55\nуголок г/к (50х50х5, L=6 м) - 0,156 т"
-        )
+    # ------------------------------------------------------------------
+    # Шаг 1: Парсинг → черновик (counter=0, номер присваивается при confirm)
+    # ------------------------------------------------------------------
 
     async def build_preview(
         self,
@@ -146,9 +149,86 @@ class MaterialsService:
                 lines_text = text
 
                 if is_private:
-                    obj, lines_text, hard_error = await self._resolve_private_input(session=session, text=text)  # type: ignore[arg-type]
-                    if hard_error:
-                        return PreviewResult("", "", hard_error)
+                    raw = [ln.strip() for ln in text.splitlines() if ln.strip()]
+                    if not raw:
+                        return PreviewResult("", "", "Сообщение пустое.")
+
+                    first_line = raw[0]
+                    lines_text = "\n".join(raw[1:])
+                    ps_hint, work_type_hint = _parse_object_hint(first_line)
+
+                    # Шаг 1: поиск кандидатов
+                    if ps_hint:
+                        candidates = await self.objects_repo.find_by_ps_number(
+                            session, ps_hint
+                        )
+                        if not candidates:
+                            # ps_number распознан, но не найден — фолбэк на полный поиск
+                            candidates = await self.objects_repo.search(
+                                session, first_line, limit=5
+                            )
+                    else:
+                        # Нет «ПС N» — полнотекстовый поиск (по названию, адресу и т.д.)
+                        candidates = await self.objects_repo.search(
+                            session, first_line, limit=5
+                        )
+
+                    # Шаг 2: разрешение неоднозначности
+                    if not candidates:
+                        return PreviewResult(
+                            "", "",
+                            "⚠️ Объект не найден.\n\n"
+                            "Укажите объект первой строкой:\n"
+                            "  • «ПС 57» — если объект единственный с таким номером\n"
+                            "  • «ПС 24 Реконструкция» — если несколько объектов с одним № ПС\n\n"
+                            "Пример:\nПС 55\nуголок г/к (50х50х5, L=6 м) - 0,156 т",
+                        )
+
+                    if len(candidates) == 1:
+                        obj = candidates[0]
+
+                    else:
+                        # Несколько кандидатов → нужно уточнение по виду работ
+                        if work_type_hint:
+                            filtered = [
+                                c for c in candidates
+                                if c.work_type
+                                and work_type_hint.lower() in c.work_type.lower()
+                            ]
+                            if len(filtered) == 1:
+                                obj = filtered[0]
+                            elif not filtered:
+                                options = _format_object_options(candidates)
+                                return PreviewResult(
+                                    "", "",
+                                    f"⚠️ Вид работ «{work_type_hint}» не найден "
+                                    f"для ПС {ps_hint or first_line}.\n\n"
+                                    f"Доступные варианты:\n{options}\n\n"
+                                    "Укажите вид работ точнее.",
+                                )
+                            else:
+                                options = _format_object_options(filtered)
+                                return PreviewResult(
+                                    "", "",
+                                    f"⚠️ По запросу «{first_line}» "
+                                    f"найдено несколько совпадений:\n{options}\n\n"
+                                    "Уточните запрос.",
+                                )
+                        else:
+                            # Нет work_type_hint → просим уточнить
+                            ps_display = (
+                                f"ПС {ps_hint}" if ps_hint else f"«{first_line}»"
+                            )
+                            options = _format_object_options(candidates)
+                            return PreviewResult(
+                                "", "",
+                                f"⚠️ По {ps_display} найдено несколько объектов.\n\n"
+                                f"Уточните вид работ:\n{options}\n\n"
+                                "Пример:\n"
+                                "ПС 24 Реконструкция\n"
+                                "уголок г/к (50х50х5, L=6 м) - 0,156 т",
+                            )
+
                 else:
                     linked = await self.objects_repo.list_linked_objects(session, chat_id)
                     if linked:
@@ -156,10 +236,11 @@ class MaterialsService:
 
                 parse_result = parse_materials_message(lines_text)
                 if not parse_result.lines:
-                    err_detail = "\n".join(f"  • {e}" for e in parse_result.errors[:5])
+                    err_detail = "\n".join(
+                        f"  • {e}" for e in parse_result.errors[:5]
+                    )
                     return PreviewResult(
-                        "",
-                        "",
+                        "", "",
                         "⚠️ Не удалось распознать позиции заявки.\n\n"
                         "Проверьте формат строк:\n[Имя] ([Тип]) - [Количество] [Единицы]\n\n"
                         "Пример:\nуголок г/к (50х50х5, L=6 м) - 0,156 т"
@@ -169,7 +250,7 @@ class MaterialsService:
                 recipient_email = await self.settings_service.get_recipient_email(session)
 
                 today = date.today()
-                ps_number = (
+                ps_number_val = (
                     getattr(obj, "ps_number", None)
                     or getattr(obj, "ps_name", None)
                     or "???"
@@ -182,7 +263,7 @@ class MaterialsService:
                     chat_id=chat_id if not is_private else None,
                     telegram_user_id=telegram_user_id,
                     object_id=getattr(obj, "id", None) if obj else None,
-                    ps_number=ps_number,
+                    ps_number=ps_number_val,
                     request_date=today,
                     counter=0,
                     request_number=None,
@@ -194,14 +275,14 @@ class MaterialsService:
                 object_name = (
                     getattr(obj, "title_name", None)
                     or getattr(obj, "ps_name", None)
-                    or ps_number
-                ) if obj else ps_number
+                    or ps_number_val
+                ) if obj else ps_number_val
 
                 lines_display = "\n".join(ln.display() for ln in parse_result.lines)
                 preview = (
                     "📦 Заявка на материалы — ПРЕДПРОСМОТР\n\n"
                     f"Объект: {object_name}\n"
-                    f"ПС: {ps_number}\n"
+                    f"ПС: {ps_number_val}\n"
                     f"Дата: {today.strftime('%d.%m.%Y')}\n\n"
                     f"Позиции:\n{lines_display}\n\n"
                     "Проверьте список. Если всё верно — нажмите «✅ Подтвердить»."
@@ -227,10 +308,21 @@ class MaterialsService:
 
         return PreviewResult(draft_id=draft_id, preview_text=preview, hard_error="")
 
-    async def confirm(self, *, draft_id: str, telegram_user_id: int) -> ConfirmResult:
+    # ------------------------------------------------------------------
+    # Шаг 2: confirm → claim → cooldown-check → counter → Excel → email → статус
+    # ------------------------------------------------------------------
+
+    async def confirm(
+        self,
+        *,
+        draft_id: str,
+        telegram_user_id: int,
+    ) -> ConfirmResult:
         async with self.session_factory() as session:
             async with session.begin():
-                claimed = await self.materials_repo.claim_for_sending(session, draft_id=draft_id, telegram_user_id=telegram_user_id)
+                claimed = await self.materials_repo.claim_for_sending(
+                    session, draft_id=draft_id, telegram_user_id=telegram_user_id
+                )
                 if not claimed:
                     req = await self.materials_repo.get_by_draft_id(session, draft_id)
                     if req is None:
@@ -238,15 +330,22 @@ class MaterialsService:
                     if req.telegram_user_id != telegram_user_id:
                         return ConfirmResult(False, "Нет доступа к этой заявке.")
                     if req.status == "failed":
-                        return ConfirmResult(False, "❌ Предыдущая попытка отправки завершилась ошибкой.\n\nСоздайте новую заявку командой /materials.")
+                        return ConfirmResult(
+                            False,
+                            "❌ Предыдущая попытка отправки завершилась ошибкой.\n\n"
+                            "Создайте новую заявку командой /materials.",
+                        )
                     return ConfirmResult(False, "Уже обработано.")
 
                 req = await self.materials_repo.get_by_draft_id(session, draft_id)
                 scope_id = req.chat_id or telegram_user_id  # type: ignore[union-attr]
 
+                # Cooldown-gate: повторная проверка внутри транзакции
                 cooldown_minutes = await self.settings_service.get_cooldown_minutes(session)
                 if cooldown_minutes > 0:
-                    rl_row = await self.rate_limits_repo.get(session, scope_type=_MAT_SCOPE, scope_id=scope_id)
+                    rl_row = await self.rate_limits_repo.get(
+                        session, scope_type=_MAT_SCOPE, scope_id=scope_id
+                    )
                     if rl_row is not None:
                         _now = datetime.now(timezone.utc)
                         _last = rl_row.last_request_at
@@ -257,22 +356,35 @@ class MaterialsService:
                         _next = _last + timedelta(minutes=cooldown_minutes)
                         if _now < _next:
                             remaining = int((_next - _now).total_seconds())
-                            await self.materials_repo.update_status(session, draft_id=draft_id, status="draft")
+                            await self.materials_repo.update_status(
+                                session, draft_id=draft_id, status="draft"
+                            )
                             _m, _s = divmod(remaining, 60)
-                            until_local = _next.astimezone().strftime("%H:%M")
                             return ConfirmResult(
                                 False,
-                                "⏱ Заявку пока нельзя отправить: cooldown активен.\n\n"
-                                f"Следующая отправка возможна через {_m} мин. {_s} сек. (до {until_local}).\n"
+                                f"⏱ Заявку пока нельзя отправить: cooldown активен.\n\n"
+                                f"Следующая отправка возможна через {_m} мин. {_s} сек.\n"
                                 "Нажмите «✅ Подтвердить» после окончания ожидания.",
                                 keep_keyboard=True,
                             )
 
-                counter = await self.materials_repo.increment_daily_counter(session, chat_id=scope_id, counter_date=req.request_date)  # type: ignore[union-attr]
-                request_number = f"{req.request_date.strftime('%y%m%d')}-{req.ps_number or '???'}-{counter}"  # type: ignore[union-attr]
-                await self.materials_repo.assign_number(session, draft_id=draft_id, counter=counter, request_number=request_number)
+                counter = await self.materials_repo.increment_daily_counter(
+                    session, chat_id=scope_id, counter_date=req.request_date  # type: ignore[union-attr]
+                )
+                request_number = (
+                    f"{req.request_date.strftime('%y%m%d')}-{req.ps_number or '???'}-{counter}"  # type: ignore[union-attr]
+                )
+                await self.materials_repo.assign_number(
+                    session,
+                    draft_id=draft_id,
+                    counter=counter,
+                    request_number=request_number,
+                )
 
-                recipient_email = req.recipient_email or await self.settings_service.get_recipient_email(session)  # type: ignore[union-attr]
+                recipient_email = (
+                    req.recipient_email  # type: ignore[union-attr]
+                    or await self.settings_service.get_recipient_email(session)
+                )
 
                 obj_data: dict = {}  # type: ignore[type-arg]
                 if req.object_id:  # type: ignore[union-attr]
@@ -303,21 +415,33 @@ class MaterialsService:
                     ],
                 )
 
+        # --- Excel в отдельном потоке (NFR: не блокировать event loop) ---
         try:
-            excel_bytes: bytes = await asyncio.to_thread(fill_excel_template, draft, obj_data)
+            excel_bytes: bytes = await asyncio.to_thread(
+                fill_excel_template, draft, obj_data
+            )
         except Exception as exc:
             logger.error("excel_generation_failed", draft_id=draft_id, error=str(exc))
             async with self.session_factory() as session:
                 async with session.begin():
-                    await self.materials_repo.update_status(session, draft_id=draft_id, status="failed", error_code="EXCEL_ERROR", error_message=str(exc)[:512])
-            return ConfirmResult(False, "❌ Не удалось сформировать файл заявки.\n\nОбратитесь к инженеру ПТО.")
+                    await self.materials_repo.update_status(
+                        session,
+                        draft_id=draft_id,
+                        status="failed",
+                        error_code="EXCEL_ERROR",
+                        error_message=str(exc)[:512],
+                    )
+            return ConfirmResult(
+                False,
+                "❌ Не удалось сформировать файл заявки.\n\nОбратитесь к инженеру ПТО.",
+            )
 
         ps = draft.ps_number or "объект"
         today_str = draft.request_date.strftime("%d.%m.%Y")
         filename = build_file_name(draft)
         subject = f"ПС {ps}: Заявка от {today_str} ({draft.counter})"
         body = (
-            "Заявка на материалы\n\n"
+            f"Заявка на материалы\n\n"
             f"Объект/ПС: {ps}\n"
             f"Дата: {today_str}\n"
             f"Номер: {draft.request_number}\n"
@@ -336,35 +460,59 @@ class MaterialsService:
             logger.error("materials_email_failed", draft_id=draft_id, error=str(exc))
             async with self.session_factory() as session:
                 async with session.begin():
-                    await self.materials_repo.update_status(session, draft_id=draft_id, status="failed", error_code="SMTP_ERROR", error_message=str(exc)[:512])
-            return ConfirmResult(False, f"❌ Не удалось отправить заявку на e-mail.\n\nПричина: {type(exc).__name__}\n\nСоздайте новую заявку командой /materials.")
+                    await self.materials_repo.update_status(
+                        session,
+                        draft_id=draft_id,
+                        status="failed",
+                        error_code="SMTP_ERROR",
+                        error_message=str(exc)[:512],
+                    )
+            return ConfirmResult(
+                False,
+                f"❌ Не удалось отправить заявку на e-mail.\n\n"
+                f"Причина: {type(exc).__name__}\n\n"
+                "Создайте новую заявку командой /materials.",
+            )
 
+        # --- Успех: статус + cooldown ТОЛЬКО после успешной отправки (FR-MAT-10) ---
         now = datetime.now(timezone.utc)
         next_time = now + timedelta(minutes=cooldown_minutes)
 
         async with self.session_factory() as session:
             async with session.begin():
-                await self.materials_repo.update_status(session, draft_id=draft_id, status="sent")
-                if cooldown_minutes > 0:
-                    await self.rate_limits_repo.upsert(session, scope_type=_MAT_SCOPE, scope_id=scope_id, last_request_at=now)
+                await self.materials_repo.update_status(
+                    session, draft_id=draft_id, status="sent"
+                )
+                await self.rate_limits_repo.upsert(
+                    session,
+                    scope_type=_MAT_SCOPE,
+                    scope_id=scope_id,
+                    last_request_at=now,
+                )
+
+        logger.info(
+            "materials_sent",
+            draft_id=draft_id,
+            to=recipient_email,
+            ps=ps,
+            counter=draft.counter,
+        )
 
         object_display = obj_data.get("ps_name") or ps
-        tail = ""
-        if cooldown_minutes > 0:
-            tail = (
-                f"\n\n⏱ Следующую заявку можно отправить через {cooldown_minutes} мин.\n"
-                f"Не ранее: {next_time.astimezone().strftime('%d.%m.%Y %H:%M')}"
-            )
-
         return ConfirmResult(
             True,
-            "✅ Заявка на материалы отправлена на проверку.\n\n"
+            f"✅ Заявка на материалы отправлена на проверку.\n\n"
             f"Объект: {object_display}\n"
             f"ПС: {ps}\n"
             f"Дата: {today_str} ({draft.counter})\n"
-            f"E-mail получателя: {recipient_email}"
-            + tail,
+            f"E-mail получателя: {recipient_email}\n\n"
+            f"⏱ Следующую заявку можно отправить через {cooldown_minutes} мин.\n"
+            f"Не ранее: {next_time.astimezone().strftime('%d.%m.%Y %H:%M')}",
         )
+
+    # ------------------------------------------------------------------
+    # Отмена: cooldown не запускается (FR-MAT-10)
+    # ------------------------------------------------------------------
 
     async def cancel(self, *, draft_id: str, telegram_user_id: int) -> str:
         async with self.session_factory() as session:
@@ -376,6 +524,8 @@ class MaterialsService:
                     return "Уже обработано."
                 if req.telegram_user_id != telegram_user_id:
                     return "Нет доступа к этой заявке."
-                await self.materials_repo.update_status(session, draft_id=draft_id, status="cancelled")
+                await self.materials_repo.update_status(
+                    session, draft_id=draft_id, status="cancelled"
+                )
         logger.info("materials_cancelled", draft_id=draft_id, user=telegram_user_id)
         return "❌ Заявка отменена. Ничего не отправлено."

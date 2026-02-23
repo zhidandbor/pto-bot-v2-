@@ -45,6 +45,18 @@ class ObjectsRepository:
             await session.flush()
         return obj, created
 
+    async def find_by_ps_number(
+        self, session: AsyncSession, ps_number: str
+    ) -> list[Object]:
+        """Точный поиск по номеру ПС. Возвращает все объекты с данным ps_number
+        (может быть несколько при разных видах работ)."""
+        res = await session.execute(
+            select(Object)
+            .where(Object.ps_number == ps_number)
+            .order_by(Object.work_type)
+        )
+        return list(res.scalars().all())
+
     async def search(self, session: AsyncSession, query: str, limit: int = 25) -> list[Object]:
         q = (query or "").strip()
         if not q:
