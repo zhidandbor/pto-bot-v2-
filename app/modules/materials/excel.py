@@ -1,3 +1,12 @@
+"""Excel generation for the Materials module.
+
+This module fills a pre-defined XLSX template (template_materials.xlsx) with
+object metadata and parsed material lines.
+
+The layout is intentionally tied to the template (fixed cell addresses and
+row ranges) and must be updated together with the template when it changes.
+"""
+
 from __future__ import annotations
 
 import io
@@ -40,18 +49,15 @@ _EXCEL_DANGEROUS_PREFIXES = ("=", "+", "-", "@")
 # ---------------------------------------------------------------------------
 
 def fill_excel_template(draft: MaterialDraft, object_data: dict[str, Any]) -> bytes:
-    """
-    Заполнить template_materials.xlsx данными черновика.
+    """Fill template_materials.xlsx with draft data and return XLSX bytes.
 
-    Параметры object_data формирует ObjectResolverAdapter из app.db.models.Object:
+    object_data is expected to contain resolved object fields:
         ps_name, contractor, work_type, contract_number,
         work_period, customer, address.
 
-    Возвращает: сырые байты .xlsx.
-
-    Исключения:
-        FileNotFoundError — шаблон отсутствует.
-        ValueError        — draft.lines пуст.
+    Raises:
+        FileNotFoundError: template file is missing.
+        ValueError: draft.lines is empty.
     """
     if not TEMPLATE_PATH.exists():
         raise FileNotFoundError(f"Шаблон не найден: {TEMPLATE_PATH}")
@@ -110,10 +116,7 @@ def fill_excel_template(draft: MaterialDraft, object_data: dict[str, Any]) -> by
 
 
 def build_file_name(draft: MaterialDraft) -> str:
-    """
-    Генерирует имя файла по образцу:
-        Заявка_ПС-110_2026-02-21_№3.xlsx
-    """
+    """Build a stable XLSX filename for the generated request."""
     ps = (draft.ps_number or "объект").replace(" ", "_").replace("/", "-")
     d = draft.request_date.strftime("%Y-%m-%d")
     return f"Заявка_{ps}_{d}_№{draft.counter}.xlsx"
@@ -124,10 +127,10 @@ def build_file_name(draft: MaterialDraft) -> str:
 # ---------------------------------------------------------------------------
 
 def sanitize_excel_text(value: str) -> str:
-    """
-    Предотвращает Excel formula injection.
-    Если строка начинается с опасного символа (=, +, -, @),
-    префиксируем апострофом '  и логируем событие.
+    """Prevent Excel formula injection for user-provided strings.
+
+    If the string starts with a dangerous prefix (=, +, -, @), it is prefixed
+    with an apostrophe.
     """
     stripped = value.lstrip()
     if stripped and stripped[0] in _EXCEL_DANGEROUS_PREFIXES:
@@ -145,18 +148,17 @@ def sanitize_excel_text(value: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _clear_items(ws: Any) -> None:
-    """Очистить ячейки A:F в строках ITEMS_START_ROW..ITEMS_END_ROW."""
+    """Clear item cells in the template (A/F columns, ITEMS_START_ROW..ITEMS_END_ROW)."""
     for row in range(ITEMS_START_ROW, ITEMS_END_ROW + 1):
         for col in (COL_A, COL_B, COL_C, COL_E, COL_F):
             _set_col(ws, row, col, None)
 
 
 def _set(ws: Any, cell_ref: str, value: Any) -> None:
-    """
-    Записать значение по текстовой ссылке (напр. "C1").
-    Молча пропускает MergedCell-дочерние ячейки — запись только
-    в главную (верхнюю-левую) ячейку объединения.
-    Строковые значения проходят sanitize_excel_text().
+    """Set cell value by A1 reference.
+
+    Skips child cells of merged regions and writes into the merge master instead.
+    All string values pass through sanitize_excel_text().
     """
     if isinstance(value, str):
         value = sanitize_excel_text(value)
@@ -173,7 +175,7 @@ def _set(ws: Any, cell_ref: str, value: Any) -> None:
 
 
 def _set_col(ws: Any, row: int, col: int, value: Any) -> None:
-    """Записать значение по (row, col). Пропускает MergedCell-рабов."""
+    """Set cell value by row/column (1-based)."""
     if isinstance(value, str):
         value = sanitize_excel_text(value)
 
@@ -183,10 +185,7 @@ def _set_col(ws: Any, row: int, col: int, value: Any) -> None:
 
 
 def _find_merge_master(ws: Any, cell_ref: str) -> Any | None:
-    """
-    Найти главную (не MergedCell) ячейку для данной ссылки.
-    Возвращает None, если не удаётся разрешить.
-    """
+    """Find a merge-master cell for a given A1 reference."""
     from openpyxl.utils import coordinate_to_tuple, get_column_letter
 
     try:
@@ -206,14 +205,15 @@ def _find_merge_master(ws: Any, cell_ref: str) -> Any | None:
 
 
 def _ru_date(d: date) -> str:
-    """Форматировать дату по-русски: «21 февраля 2026 г.»"""
+    """Format date in Russian: '21 февраля 2026 г.'"""
     return f"{d.day} {_MONTHS_RU[d.month - 1]} {d.year} г."
 
 
 def _format_qty(qty: Decimal) -> int | float:
-    """
-    Decimal → int (целые без .0) или float (дроби, квантованные до 0.001).
-    Decimal хранится точно до этой точки; Excel хранит как double.
+    """Convert Decimal qty for Excel output.
+
+    - Whole numbers are written as int.
+    - Fractional values are quantized to 0.001 and written as float.
     """
     if qty == qty.to_integral_value():
         return int(qty)
