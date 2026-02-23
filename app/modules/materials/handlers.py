@@ -15,15 +15,15 @@ from app.modules.materials.service import MaterialsService
 logger = get_logger(__name__)
 
 _INSTRUCTION = (
-    "📦 <b>Заявка на материалы</b>\n\n"
-    "Отправьте список материалов — каждый с новой строки:\n\n"
-    "<code>[Имя] ([Тип]) - [Количество] [Единицы]</code>\n\n"
-    "<b>Пример:</b>\n"
-    "<code>ПС 55\n"
-    "уголок г/к (50х50х5, L=6 м) - 0,156 т\n"
-    "кабель ВВГнг 3х2.5 - 100 м</code>\n\n"
-    "<i>В личном чате укажите объект первой строкой "
-    "(например: «ПС 55» или «Левашовская»).</i>"
+    "\U0001f4e6 <b>\u0417\u0430\u044f\u0432\u043a\u0430 \u043d\u0430 \u043c\u0430\u0442\u0435\u0440\u0438\u0430\u043b\u044b</b>\n\n"
+    "\u041e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u0441\u043f\u0438\u0441\u043e\u043a \u043c\u0430\u0442\u0435\u0440\u0438\u0430\u043b\u043e\u0432 \u2014 \u043a\u0430\u0436\u0434\u044b\u0439 \u0441 \u043d\u043e\u0432\u043e\u0439 \u0441\u0442\u0440\u043e\u043a\u0438:\n\n"
+    "<code>[\u0418\u043c\u044f] ([\u0422\u0438\u043f]) - [\u041a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e] [\u0415\u0434\u0438\u043d\u0438\u0446\u044b]</code>\n\n"
+    "<b>\u041f\u0440\u0438\u043c\u0435\u0440:</b>\n"
+    "<code>\u041f\u0421 55\n"
+    "\u0443\u0433\u043e\u043b\u043e\u043a \u0433/\u043a (50\u04505, L=6 \u043c) - 0,156 \u0442\n"
+    "\u043a\u0430\u0431\u0435\u043b\u044c \u0412\u0412\u0413\u043d\u0433 3\u04502.5 - 100 \u043c</code>\n\n"
+    "<i>\u0412 \u043b\u0438\u0447\u043d\u043e\u043c \u0447\u0430\u0442\u0435 \u0443\u043a\u0430\u0436\u0438\u0442\u0435 \u043e\u0431\u044a\u0435\u043a\u0442 \u043f\u0435\u0440\u0432\u043e\u0439 \u0441\u0442\u0440\u043e\u043a\u043e\u0439 "
+    "(\u043d\u0430\u043f\u0440\u0438\u043c\u0435\u0440: \u00ab\u041f\u0421 55\u00bb \u0438\u043b\u0438 \u00ab\u041b\u0435\u0432\u0430\u0448\u043e\u0432\u0441\u043a\u0430\u044f\u00bb).</i>"
 )
 
 
@@ -43,8 +43,8 @@ def build_router(service: MaterialsService) -> Router:
             minutes, secs = divmod(max(0, remaining), 60)
             until = datetime.now().astimezone() + timedelta(seconds=int(remaining))
             await message.reply(
-                "⏱ Следующую заявку на материалы можно отправить через "
-                f"{minutes} мин. {secs} сек. (до {until:%H:%M})."
+                "\u23f1 \u0421\u043b\u0435\u0434\u0443\u044e\u0449\u0443\u044e \u0437\u0430\u044f\u0432\u043a\u0443 \u043d\u0430 \u043c\u0430\u0442\u0435\u0440\u0438\u0430\u043b\u044b \u043c\u043e\u0436\u043d\u043e \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u0447\u0435\u0440\u0435\u0437 "
+                f"{minutes} \u043c\u0438\u043d. {secs} \u0441\u0435\u043a. (\u0434\u043e {until:%H:%M})."
             )
             return
 
@@ -52,10 +52,11 @@ def build_router(service: MaterialsService) -> Router:
         await message.reply(_INSTRUCTION, parse_mode="HTML")
         logger.info("materials_started", chat_id=message.chat.id, user_id=message.from_user.id)
 
-    @r.message(MaterialsFSM.waiting_list)
-    async def on_waiting_non_text(message: Message, **kwargs: object) -> None:
-        if not message.text:
-            await message.reply("⚠️ Отправьте текст заявки. Каждый материал — с новой строки.")
+    # FIX BUG-3: In aiogram 3 handlers are matched strictly in registration order.
+    # The handler with the MORE SPECIFIC filter (F.text) MUST be registered FIRST.
+    # Previously on_waiting_non_text (no filter = matches everything including text)
+    # was registered before on_materials_list (F.text), silently consuming all text
+    # messages in waiting_list state without calling on_materials_list at all.
 
     @r.message(MaterialsFSM.waiting_list, F.text)
     async def on_materials_list(message: Message, state: FSMContext, **kwargs: object) -> None:
@@ -72,7 +73,7 @@ def build_router(service: MaterialsService) -> Router:
         )
 
         if result.hard_error:
-            # ВАЖНО: сценарий не завершён — оставляем state, чтобы пользователь мог повторить ввод
+            # Scenario not completed — keep state so user can retry input
             await message.reply(result.hard_error)
             return
 
@@ -83,19 +84,23 @@ def build_router(service: MaterialsService) -> Router:
         )
         logger.info("materials_preview_sent", draft_id=result.draft_id, user_id=message.from_user.id, chat_id=message.chat.id)
 
+    @r.message(MaterialsFSM.waiting_list, ~F.text)
+    async def on_waiting_non_text(message: Message, **kwargs: object) -> None:
+        await message.reply("\u26a0\ufe0f \u041e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u0442\u0435\u043a\u0441\u0442 \u0437\u0430\u044f\u0432\u043a\u0438. \u041a\u0430\u0436\u0434\u044b\u0439 \u043c\u0430\u0442\u0435\u0440\u0438\u0430\u043b \u2014 \u0441 \u043d\u043e\u0432\u043e\u0439 \u0441\u0442\u0440\u043e\u043a\u0438.")
+
     @r.callback_query(F.data.startswith("mat:confirm:"))
     async def on_confirm(callback: CallbackQuery, **kwargs: object) -> None:
         if callback.from_user is None or callback.message is None:
-            await callback.answer("Ошибка данных.", show_alert=True)
+            await callback.answer("\u041e\u0448\u0438\u0431\u043a\u0430 \u0434\u0430\u043d\u043d\u044b\u0445.", show_alert=True)
             return
 
         draft_id = (callback.data or "").removeprefix("mat:confirm:")
         if not draft_id:
-            await callback.answer("Неверный формат callback.", show_alert=True)
+            await callback.answer("\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u0444\u043e\u0440\u043c\u0430\u0442 callback.", show_alert=True)
             return
 
-        await callback.answer("Принято, обрабатываю...")
-        await callback.message.reply("⏳ Проверяю и формирую заявку...")
+        await callback.answer("\u041f\u0440\u0438\u043d\u044f\u0442\u043e, \u043e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u044e...")
+        await callback.message.reply("\u23f3 \u041f\u0440\u043e\u0432\u0435\u0440\u044f\u044e \u0438 \u0444\u043e\u0440\u043c\u0438\u0440\u0443\u044e \u0437\u0430\u044f\u0432\u043a\u0443...")
 
         result = await service.confirm(draft_id=draft_id, telegram_user_id=callback.from_user.id)
 
@@ -111,15 +116,15 @@ def build_router(service: MaterialsService) -> Router:
     @r.callback_query(F.data.startswith("mat:cancel:"))
     async def on_cancel(callback: CallbackQuery, **kwargs: object) -> None:
         if callback.from_user is None or callback.message is None:
-            await callback.answer("Ошибка данных.", show_alert=True)
+            await callback.answer("\u041e\u0448\u0438\u0431\u043a\u0430 \u0434\u0430\u043d\u043d\u044b\u0445.", show_alert=True)
             return
 
         draft_id = (callback.data or "").removeprefix("mat:cancel:")
         if not draft_id:
-            await callback.answer("Неверный формат callback.", show_alert=True)
+            await callback.answer("\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u0444\u043e\u0440\u043c\u0430\u0442 callback.", show_alert=True)
             return
 
-        await callback.answer("Заявка отменена")
+        await callback.answer("\u0417\u0430\u044f\u0432\u043a\u0430 \u043e\u0442\u043c\u0435\u043d\u0435\u043d\u0430")
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
         except Exception:
