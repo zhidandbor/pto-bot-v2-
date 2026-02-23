@@ -16,6 +16,10 @@ logger = get_logger(__name__)
 # CR / LF — запрещенные символы в заголовках email (RFC 5322)
 _HEADER_INJECT_RE = re.compile(r"[\r\n]")
 
+# Structural email validation: local-part @ domain.tld, no whitespace.
+# Rejects malformed addresses ("a@", "@b", "no-at-sign") before reaching SMTP.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 # Типичный лимит корпоративных SMTP-серверов; Excel-заявка обычно не превышает 500 КБ
 _MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 МБ
 
@@ -72,7 +76,7 @@ class MaterialsEmailDispatcher:
         safe_filename = _sanitize_filename(attachment_filename)
 
         # FIX VALIDATION: ранняя проверка адреса и размера вложения
-        if not safe_to or "@" not in safe_to:
+        if not safe_to or not _EMAIL_RE.match(safe_to):
             raise ValueError(f"Некорректный адрес получателя: {safe_to!r}")
         if len(attachment_bytes) > _MAX_ATTACHMENT_BYTES:
             raise ValueError(
