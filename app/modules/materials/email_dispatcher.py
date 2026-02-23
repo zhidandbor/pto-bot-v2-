@@ -70,14 +70,20 @@ class MaterialsEmailDispatcher:
         if not self.settings.smtp_host:
             raise RuntimeError("SMTP_HOST не задан — отправка недоступна")
 
+        # FIX VALIDATION: validate recipient email BEFORE header sanitization.
+        raw_to = (to_email or "").strip()
+        if _HEADER_INJECT_RE.search(raw_to):
+            logger.warning("email_header_injection_attempt", field="To", value=raw_to[:80])
+            raise ValueError("Некорректный адрес получателя")
+        if not raw_to or not _EMAIL_RE.match(raw_to):
+            raise ValueError(f"Некорректный адрес получателя: {raw_to!r}")
+
         # Санитация заголовков до подстановки в MIME
-        safe_to = _sanitize_header(to_email, "To")
+        safe_to = _sanitize_header(raw_to, "To")
         safe_subject = _sanitize_header(subject, "Subject")
         safe_filename = _sanitize_filename(attachment_filename)
 
-        # FIX VALIDATION: ранняя проверка адреса и размера вложения
-        if not safe_to or not _EMAIL_RE.match(safe_to):
-            raise ValueError(f"Некорректный адрес получателя: {safe_to!r}")
+        # Размер вложения
         if len(attachment_bytes) > _MAX_ATTACHMENT_BYTES:
             raise ValueError(
                 f"Вложение слишком велико: {len(attachment_bytes):,} байт "
