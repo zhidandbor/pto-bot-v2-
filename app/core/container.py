@@ -145,11 +145,13 @@ def build_container(settings: Settings) -> Container:
         audit=audit_service,
     )
     help_service = HelpService(registry=registry, rbac=rbac, settings_service=settings_service)
+    
     excel_import_service = ExcelImportService(
-        settings=settings,
-        reader=excel_reader,
+        session_factory=session_factory,
+        reader=ObjectsExcelReader(),
         objects_repo=objects_repo,
-        excel_imports_repo=excel_imports_repo,
+        groups_repo=groups_repo,
+        excel_imports_repo=ExcelImportsRepository(),
         audit=audit_service,
     )
 
