@@ -1,3 +1,12 @@
+"""Materials text parser.
+
+This module parses a free-form message into a normalized list of material lines
+for the Materials module.
+
+The parser is intentionally permissive (accepts several user-friendly formats)
+and returns a structured result with errors/skipped lines instead of raising.
+"""
+
 from __future__ import annotations
 
 import re
@@ -25,12 +34,27 @@ _NAME_TYPE_RE = re.compile(r"^\s*(.+?)\s*\((.+?)\)\s*$", re.UNICODE)
 
 @dataclass
 class ParseResult:
+    """Result of parsing a materials message.
+
+    lines: Successfully parsed material lines (up to MAX_LINES).
+    errors: Human-readable errors for lines that could not be parsed.
+    skipped: Count of extra lines ignored due to MAX_LINES limit.
+    """
+
     lines: list[MaterialLine]
     errors: list[str]
     skipped: int
 
 
 def _normalize_raw_line(s: str) -> str:
+    """Normalize one raw input line.
+
+    - Trims whitespace.
+    - Skips empty lines and commands (starting with '/').
+    - Normalizes long dashes to '-'.
+    - Removes trailing punctuation junk.
+    - Collapses multiple spaces.
+    """
     s = s.strip()
     if not s or s.startswith("/"):
         return ""
@@ -41,6 +65,10 @@ def _normalize_raw_line(s: str) -> str:
 
 
 def _to_decimal(num: str) -> Decimal:
+    """Convert a numeric token to Decimal.
+
+    Accepts comma or dot as decimal separator.
+    """
     return Decimal(num.replace(",", "."))
 
 
@@ -69,7 +97,7 @@ def _split_head_qty_unit(raw: str) -> tuple[str, str] | None:
 
 
 def parse_materials_message(text: str) -> ParseResult:
-    """Parse materials list.
+    """Parse a materials list message into structured lines.
 
     Preferred format per line:
         [Имя] ([Тип]) - [Количество] [Единицы]
