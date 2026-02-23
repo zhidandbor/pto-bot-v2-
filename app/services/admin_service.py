@@ -13,13 +13,12 @@ from app.services.settings_service import SettingsService
 
 @dataclass(frozen=True)
 class AdminService:
-    """Service layer for admin operations.
+    """Сервис административных операций.
 
-    Holds references to all repositories and services required for
-    administrative commands.  Business logic is currently implemented
-    directly in the Telegram router handlers (telegram/routers/admin.py
-    and superadmin.py); this class exists as the designated DI slot for
-    future extraction of that logic into the service layer.
+    Инжектируется через Container и предоставляет единую точку входа
+    для операций управления объектами, группами и пользователями.
+    Текущие реализации находятся непосредственно в роутерах (admin.py,
+    superadmin.py); этот класс является точкой консолидации на будущее.
     """
 
     settings: Settings
