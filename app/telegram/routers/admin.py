@@ -17,6 +17,9 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# XLSX / OOXML files are ZIP archives; all valid .xlsx start with this signature.
+_XLSX_MAGIC = b"PK\x03\x04"
+
 
 def _extract_command_and_args(text: str) -> tuple[str, list[str]]:
     t = (text or "").strip()
@@ -208,13 +211,12 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
             return
 
         specs = container.registry.all_commands()  # type: ignore[attr-defined]
-        # FIX: exclude /commands itself to avoid self-reference
         admin_cmds = [
             s for s in specs
             if s.required_role in ("admin", "superadmin") and s.command != "commands"
         ]
         if not admin_cmds:
-            await message.answer("📋 Нет доступных команд.")
+            await message.answer("Нет доступных команд.")
             return
         lines = ["📋 Команды администратора:"]
         lines.extend([f"/{s.command} — {s.description}" for s in admin_cmds])
@@ -231,7 +233,6 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
         _cmd, args = _extract_command_and_args(message.text or "")
         if not args:
             cur = await container.settings_service.get_recipient_email(session)  # type: ignore[attr-defined]
-            # Use variable to avoid backslash-in-f-string (Python <3.12)
             cur_display = cur or "—"
             await message.answer(f"📧 Текущий получатель: {cur_display}\nФормат: /recipient_email user@domain")
             return
@@ -287,7 +288,6 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
 
         lines: list[str] = []
         for o in objects:
-            # Use variables to avoid backslash-in-f-string (Python <3.12)
             title = o.ps_name or o.title_name or o.address or o.dedup_key
             lines.append(f"• {o.id} — {title}")
 
@@ -325,7 +325,6 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
 
         session = kwargs["session"]
         obj, created = await container.objects_repo.upsert_by_dedup_key(session, dedup_key=dedup, fields=fields)  # type: ignore[attr-defined]
-        # Use variables to avoid backslash-in-f-string (Python <3.12)
         action = "добавлен" if created else "обновлён"
         ps_num_display = obj.ps_number or "—"
         ps_name_display = obj.ps_name or ""
@@ -372,6 +371,16 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
             return
 
         file_name, content = dl
+
+        # Security: validate file type before passing to openpyxl.
+        # Rejects macro-enabled .xlsm, crafted archives and other non-XLSX content.
+        if not file_name.lower().endswith(".xlsx"):
+            await message.answer("⚠️ Поддерживаются только файлы .xlsx")
+            return
+        if not content.startswith(_XLSX_MAGIC):
+            await message.answer("⚠️ Файл не является корректным Excel (.xlsx) — неверный формат файла.")
+            return
+
         await message.answer("⏳ Импортирую объекты из Excel...")
 
         records = await asyncio.to_thread(_parse_objects_xlsx, content)
