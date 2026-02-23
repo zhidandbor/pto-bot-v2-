@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+import zipfile
 from datetime import date, datetime
 from typing import Any
 
@@ -126,6 +127,26 @@ async def _download_document_bytes(message: Message) -> tuple[str, bytes] | None
     buf = io.BytesIO()
     await bot.download_file(tg_file.file_path, destination=buf)
     return (doc.file_name or "objects.xlsx", buf.getvalue())
+
+
+def _validate_xlsx_container(content: bytes) -> tuple[bool, str]:
+    """Validate that the file is a safe .xlsx container (no macros).
+
+    Minimal checks for untrusted input:
+    - the file must be a valid ZIP
+    - must contain [Content_Types].xml
+    - must NOT contain xl/vbaProject.bin (macro payload)
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            names = set(zf.namelist())
+            if "[Content_Types].xml" not in names:
+                return False, "Повреждённый .xlsx: отсутствует [Content_Types].xml."
+            if "xl/vbaProject.bin" in names:
+                return False, "Файл содержит макросы (vbaProject.bin) — запрещено."
+    except zipfile.BadZipFile:
+        return False, "Файл не является корректным .xlsx (битый ZIP)."
+    return True, ""
 
 
 def _parse_objects_xlsx(content: bytes) -> list[dict[str, Any]]:
@@ -373,12 +394,16 @@ def router(container: object) -> Router:  # type: ignore[type-arg]
         file_name, content = dl
 
         # Security: validate file type before passing to openpyxl.
-        # Rejects macro-enabled .xlsm, crafted archives and other non-XLSX content.
+        # Rejects macro-enabled payloads and crafted archives.
         if not file_name.lower().endswith(".xlsx"):
             await message.answer("⚠️ Поддерживаются только файлы .xlsx")
             return
         if not content.startswith(_XLSX_MAGIC):
             await message.answer("⚠️ Файл не является корректным Excel (.xlsx) — неверный формат файла.")
+            return
+        ok, err = _validate_xlsx_container(content)
+        if not ok:
+            await message.answer(f"⚠️ Импорт отклонён: {err}")
             return
 
         await message.answer("⏳ Импортирую объекты из Excel...")
